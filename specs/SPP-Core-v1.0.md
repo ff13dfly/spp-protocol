@@ -4,7 +4,7 @@
 
 | Field       | Value                                                    |
 | ----------- | -------------------------------------------------------- |
-| Status      | Draft                                                    |
+| Status      | Stable                                                   |
 | Version     | 1.0                                                      |
 | Author      | 傅忠强 (Zhongqiang Fu)                                    |
 | Date        | 2026-02-19                                               |
