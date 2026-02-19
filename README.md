@@ -10,7 +10,6 @@ SPP is designed to:
 - Enable AI-driven world generation
 - Separate spatial logic from visual representation
 - Support long-term compatibility across devices and eras
-- Serve as a universal semantic layer for games, simulations, and architectural spaces
 
 ## Specification
 
