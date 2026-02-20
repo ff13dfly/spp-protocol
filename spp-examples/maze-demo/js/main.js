@@ -281,21 +281,44 @@ function updateCamera() {
 
 // ─── Input ──────────────────────────────────────────────────
 
-let lastClick = 0;
+let lastClickTime = 0;
+let clickTimer = null;
+
 function onAction(e) {
     // Don't trigger on control panel interactions
     if (e.target.closest('#controls')) return;
+
+    // Prevent "ghost clicks" on mobile: if this is a touch event, stop default behavior
+    if (e.type === 'touchend') {
+        e.preventDefault();
+    }
+
     const now = Date.now();
-    if (now - lastClick < 400) {
+    const delta = now - lastClickTime;
+    lastClickTime = now;
+
+    if (delta < 300) {
+        // Double Tap / Double Click Detected
+        if (clickTimer) {
+            clearTimeout(clickTimer);
+            clickTimer = null;
+        }
+
         if (currentState === State.PARTICLE) startExpansion();
         else if (currentState === State.SPACE) startCollapse();
+
     } else {
-        // Single click navigation
-        if (currentState === State.SPACE) {
-            handleNavigation(e);
-        }
+        // Potential Single Tap / Single Click
+        // Wait a bit to see if it becomes a double tap
+        if (clickTimer) clearTimeout(clickTimer);
+
+        clickTimer = setTimeout(() => {
+            if (currentState === State.SPACE) {
+                handleNavigation(e);
+            }
+            clickTimer = null;
+        }, 250); // 250ms threshold to distinguish single/double tap
     }
-    lastClick = now;
 }
 
 const raycaster = new THREE.Raycaster();
@@ -303,6 +326,8 @@ const mouse = new THREE.Vector2();
 
 function handleNavigation(e) {
     let clientX, clientY;
+
+    // Support for both mouse and touch coordinates
     if (e.touches && e.touches.length > 0) {
         clientX = e.touches[0].clientX;
         clientY = e.touches[0].clientY;
@@ -321,7 +346,6 @@ function handleNavigation(e) {
     const intersects = raycaster.intersectObjects(resolvedGroups, true);
 
     if (intersects.length > 0) {
-        // Find the parent group which contains the gridPos
         let obj = intersects[0].object;
         while (obj && !obj.userData.gridPos) {
             obj = obj.parent;
@@ -339,8 +363,10 @@ function handleNavigation(e) {
     }
 }
 
+// Consolidate listeners: touchstart/touchend can conflict with click. 
+// Using touchend + preventDefault is safest for mobile.
 renderer.domElement.addEventListener('click', onAction);
-renderer.domElement.addEventListener('touchend', onAction);
+renderer.domElement.addEventListener('touchend', onAction, { passive: false });
 
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
