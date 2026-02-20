@@ -44,17 +44,54 @@
       transition: opacity 0.4s;
     }
 
+    /* Custom Range Input Styling */
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      background: transparent;
+      height: 24px;
+      outline: none;
+      margin: 0;
+    }
+
+    input[type="range"]::-webkit-slider-runnable-track {
+      background: rgba(0, 0, 0, 0.12);
+      height: 4px;
+      border-radius: 2px;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      background: #4c82ff;
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+      border: 3px solid white;
+      margin-top: -8px;
+      /* Centers thumb on track */
+    }
+
+    input[type="range"]:active::-webkit-slider-thumb {
+      transform: scale(1.1);
+    }
+
     #title {
       position: fixed;
       top: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      color: rgba(0, 0, 0, 0.7);
+      left: 0;
+      width: 100%;
+      text-align: center;
+      color: #1d1d1f;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 800;
       letter-spacing: 2px;
       text-transform: uppercase;
+      opacity: 0.8;
       pointer-events: none;
+      z-index: 5;
     }
 
     #cell-count {
@@ -73,13 +110,14 @@
 
     #controls {
       position: fixed;
-      bottom: 60px;
+      bottom: 50px;
       left: 50%;
       transform: translateX(-50%);
       display: flex;
       gap: 6px;
       align-items: flex-end;
       z-index: 10;
+      max-width: 95vw;
     }
 
     .ctrl-group {
@@ -93,6 +131,117 @@
       align-items: center;
       gap: 6px;
       min-width: 80px;
+      flex-shrink: 0;
+    }
+
+    /* Mobile adjustments */
+    @media (max-width: 600px) {
+      #title {
+        font-size: 11px;
+        letter-spacing: 1.5px;
+        top: 15px;
+        width: 100%;
+        text-align: center;
+        line-height: 1.2;
+      }
+
+      #subtitle {
+        display: block;
+        font-size: 8px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        opacity: 0.4;
+        margin-top: 4px;
+        font-weight: 500;
+      }
+
+      #cell-count {
+        top: 15px;
+        right: 15px;
+        font-size: 9px;
+        background: none;
+        padding: 0;
+      }
+
+      #controls {
+        bottom: 20px;
+        left: 10px;
+        right: 10px;
+        width: auto;
+        transform: none;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto auto;
+        gap: 6px;
+        padding: 0;
+      }
+
+      .ctrl-group {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 8px 10px 6px;
+        min-width: 0;
+        height: auto;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid rgba(255, 255, 255, 0.4);
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      }
+
+      .ctrl-group .ctrl-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2px;
+      }
+
+      .ctrl-group label {
+        width: auto;
+        font-size: 8px;
+        opacity: 0.5;
+        margin: 0;
+      }
+
+      .ctrl-group .ctrl-value {
+        font-size: 14px;
+        width: auto;
+        margin: 0;
+        color: #4c82ff;
+      }
+
+      .ctrl-group input[type="range"] {
+        height: 20px;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        width: 16px;
+        height: 16px;
+        margin-top: -6px;
+      }
+
+      /* Adjust particle selector strip */
+      .ctrl-group.particle-select {
+        height: auto;
+        min-height: 0;
+        padding: 6px 10px;
+        justify-content: center;
+      }
+
+      .particle-option {
+        padding: 4px;
+        font-size: 9px;
+      }
+
+      .particle-option .dot {
+        width: 8px;
+        height: 8px;
+        margin-right: 4px;
+      }
+
+      #overlay {
+        display: none;
+        /* Moved to #subtitle */
+      }
     }
 
     .ctrl-group label {
@@ -179,28 +328,40 @@
 </head>
 
 <body>
-  <div id="title">String Particle Protocol</div>
+  <div id="title">
+    String Particle Protocol
+    <div id="subtitle">Double-click to expand</div>
+  </div>
   <div id="overlay">Double-click to expand</div>
   <div id="cell-count"></div>
 
   <div id="controls">
+    <!-- Row 1: Width, Cells | Row 2: Depth, Particle -->
     <div class="ctrl-group">
-      <label>Width</label>
-      <div class="ctrl-value" id="val-x">7</div>
+      <div class="ctrl-header">
+        <label>WIDTH</label>
+        <div id="val-x" class="ctrl-value">7</div>
+      </div>
       <input type="range" id="ctrl-x" min="3" max="11" step="2" value="7">
     </div>
     <div class="ctrl-group">
-      <label>Depth</label>
-      <div class="ctrl-value" id="val-z">7</div>
-      <input type="range" id="ctrl-z" min="3" max="11" step="2" value="7">
+      <div class="ctrl-header">
+        <label>CELLS</label>
+        <div id="val-cells" class="ctrl-value">35</div>
+      </div>
+      <input type="range" id="ctrl-cells" min="1" max="49" step="1" value="35">
     </div>
     <div class="ctrl-group">
-      <label>Cells</label>
-      <div class="ctrl-value" id="val-cells">35</div>
-      <input type="range" id="ctrl-cells" min="10" max="60" step="1" value="35">
+      <div class="ctrl-header">
+        <label>DEPTH</label>
+        <div id="val-z" class="ctrl-value">7</div>
+      </div>
+      <input type="range" id="ctrl-z" min="3" max="11" step="2" value="7">
     </div>
     <div class="ctrl-group particle-select">
-      <label>Particle</label>
+      <div class="ctrl-header">
+        <label>Particle</label>
+      </div>
       <div class="particle-option active" data-particle="medieval">
         <div class="dot" style="background: #d4886b;"></div>
         <span class="name">Medieval</span>

@@ -189,8 +189,14 @@ function startExpansion() {
     const extentX = halfX * CELL_SIZE;
     const extentZ = halfZ * CELL_SIZE;
     const extent = Math.max(extentX, extentZ);
+
+    // Zoom out more for narrow mobile screens
+    const isMobile = window.innerWidth < 600;
+    const zoomFactor = isMobile ? 2.5 : 1.4;
+    const yFactor = isMobile ? 3.0 : 1.6;
+
     smoothCameraTo(
-        new THREE.Vector3(extent * 1.4, extent * 1.6, extent * 1.4),
+        new THREE.Vector3(extent * zoomFactor, extent * yFactor, extent * zoomFactor),
         new THREE.Vector3(0, 0, 0)
     );
     clearPath(scene);
@@ -296,8 +302,20 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 function handleNavigation(e) {
-    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    let clientX, clientY;
+    if (e.touches && e.touches.length > 0) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+    } else if (e.changedTouches && e.changedTouches.length > 0) {
+        clientX = e.changedTouches[0].clientX;
+        clientY = e.changedTouches[0].clientY;
+    } else {
+        clientX = e.clientX;
+        clientY = e.clientY;
+    }
+
+    mouse.x = (clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(clientY / window.innerHeight) * 2 + 1;
 
     raycaster.setFromCamera(mouse, camera);
     const intersects = raycaster.intersectObjects(resolvedGroups, true);
