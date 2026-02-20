@@ -1,194 +1,253 @@
 /**
- * main.js — App entry point, scene setup, state machine
- *
- * States:
- *   SINGLE_PARTICLE → EXPANDING → MAZE → COLLAPSING → SINGLE_PARTICLE
+ * main.js — State machine with dynamic parameter controls
  */
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createCell, ALL_IDS } from './particle.js';
-import { generateMaze } from './maze-generator.js';
+
+import { createCell } from './particle.js';
+import { generateCascade } from './maze-generator.js';
 import {
     renderSuperpositionParticle,
-    renderChunk,
+    buildGhostGrid,
+    buildResolvedCell,
     CELL_SIZE,
 } from './renderer-3d.js';
 import {
     updateFaceCycling,
-    createExpandAnimation,
-    createCollapseAnimation,
+    createGridAppearAnimation,
+    createCascadeAnimation,
+    createCollapseBackAnimation,
 } from './animations.js';
 
 // ─── State ──────────────────────────────────────────────────
 
 const State = {
-    SINGLE_PARTICLE: 'SINGLE_PARTICLE',
-    EXPANDING: 'EXPANDING',
-    MAZE: 'MAZE',
+    PARTICLE: 'PARTICLE',
+    GRID_APPEAR: 'GRID_APPEAR',
+    CASCADING: 'CASCADING',
+    SPACE: 'SPACE',
     COLLAPSING: 'COLLAPSING',
 };
 
-let currentState = State.SINGLE_PARTICLE;
+let currentState = State.PARTICLE;
 let activeAnimation = null;
+
+// ─── Scene Objects ──────────────────────────────────────────
+
+let particleGroup = null;
+let particleFaceGroups = null;
+let gridGroup = null;
+let ghostMap = null;
+let resolvedGroups = [];
+let cascadeData = null;
 
 // ─── Scene Setup ────────────────────────────────────────────
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0a0f);
-scene.fog = new THREE.FogExp2(0x0a0a0f, 0.012);
+scene.background = new THREE.Color(0xf5f5f7);
 
-const camera = new THREE.PerspectiveCamera(
-    55,
-    window.innerWidth / window.innerHeight,
-    0.1,
-    500
-);
-camera.position.set(6, 8, 6);
-camera.lookAt(0, 0, 0);
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(10, 10, 10);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
 document.body.appendChild(renderer.domElement);
 
-// Controls
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.minDistance = 3;
-controls.maxDistance = 120;
-controls.maxPolarAngle = Math.PI * 0.85;
+controls.minDistance = 5;
+controls.maxDistance = 150;
 controls.target.set(0, 1, 0);
+controls.maxPolarAngle = Math.PI * 0.48;
 
 // ─── Lighting ───────────────────────────────────────────────
 
-const ambientLight = new THREE.AmbientLight(0x8899bb, 0.6);
-scene.add(ambientLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
-const dirLight = new THREE.DirectionalLight(0xffeedd, 1.2);
-dirLight.position.set(10, 15, 8);
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+dirLight.position.set(20, 35, 20);
 dirLight.castShadow = true;
 dirLight.shadow.mapSize.set(1024, 1024);
+dirLight.shadow.camera.near = 1;
+dirLight.shadow.camera.far = 100;
+dirLight.shadow.camera.left = -30;
+dirLight.shadow.camera.right = 30;
+dirLight.shadow.camera.top = 30;
+dirLight.shadow.camera.bottom = -30;
+dirLight.shadow.bias = -0.001;
 scene.add(dirLight);
 
-const fillLight = new THREE.DirectionalLight(0x6688cc, 0.4);
-fillLight.position.set(-8, 5, -6);
-scene.add(fillLight);
+scene.add(new THREE.DirectionalLight(0xaabbdd, 0.4).translateX(-15).translateY(15).translateZ(-10));
 
-// Ground plane (subtle grid)
 const groundGeo = new THREE.PlaneGeometry(200, 200);
-const groundMat = new THREE.MeshStandardMaterial({
-    color: 0x111118,
-    roughness: 0.95,
-    metalness: 0.0,
-});
+const groundMat = new THREE.MeshStandardMaterial({ color: 0xececf0, roughness: 0.95 });
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.rotation.x = -Math.PI / 2;
 ground.position.y = -0.01;
+ground.receiveShadow = true;
 scene.add(ground);
 
-// ─── Particle / Maze Groups ────────────────────────────────
+const gridHelper = new THREE.GridHelper(60, 60, 0xd5d5dd, 0xe5e5eb);
+gridHelper.position.y = 0.005;
+scene.add(gridHelper);
 
-let particleGroup = null;
-let particleFaceGroups = null;
-let mazeGroup = null;
+// ─── UI Controls ────────────────────────────────────────────
 
-// Overlay text
 const overlay = document.getElementById('overlay');
+const cellCountEl = document.getElementById('cell-count');
 
-function setOverlay(text) {
-    overlay.textContent = text;
+const ctrlX = document.getElementById('ctrl-x');
+const ctrlZ = document.getElementById('ctrl-z');
+const ctrlCells = document.getElementById('ctrl-cells');
+const valX = document.getElementById('val-x');
+const valZ = document.getElementById('val-z');
+const valCells = document.getElementById('val-cells');
+
+function getParams() {
+    return {
+        gridX: parseInt(ctrlX.value),
+        gridZ: parseInt(ctrlZ.value),
+        targetCells: parseInt(ctrlCells.value),
+    };
 }
 
-// ─── Create Single Particle ────────────────────────────────
+// Sync slider displays
+ctrlX.addEventListener('input', () => { valX.textContent = ctrlX.value; });
+ctrlZ.addEventListener('input', () => { valZ.textContent = ctrlZ.value; });
+ctrlCells.addEventListener('input', () => { valCells.textContent = ctrlCells.value; });
 
-function showSingleParticle() {
-    // Remove old
-    if (particleGroup) { scene.remove(particleGroup); particleGroup = null; }
-    if (mazeGroup) { scene.remove(mazeGroup); mazeGroup = null; }
+// Clamp cells to grid capacity
+function clampCells() {
+    const maxCells = parseInt(ctrlX.value) * parseInt(ctrlZ.value);
+    ctrlCells.max = maxCells;
+    if (parseInt(ctrlCells.value) > maxCells) {
+        ctrlCells.value = maxCells;
+        valCells.textContent = maxCells;
+    }
+}
+ctrlX.addEventListener('input', clampCells);
+ctrlZ.addEventListener('input', clampCells);
 
+// Particle selector
+const particleOptions = document.querySelectorAll('.particle-option');
+let selectedParticle = 'medieval';
+
+particleOptions.forEach(opt => {
+    opt.addEventListener('click', () => {
+        particleOptions.forEach(o => o.classList.remove('active'));
+        opt.classList.add('active');
+        selectedParticle = opt.dataset.particle;
+    });
+});
+
+function setOverlay(text) { overlay.textContent = text; }
+function setCellCount(n) { cellCountEl.textContent = n > 0 ? `${n} cells` : ''; }
+
+// ─── State: PARTICLE ───────────────────────────────────────
+
+function showParticle() {
+    cleanup();
     const cell = createCell(0, 0, 0);
-    // All horizontal faces get all options for cycling display
-    cell.faceOptions[0] = [...ALL_IDS];
-    cell.faceOptions[1] = [...ALL_IDS];
-    cell.faceOptions[4] = [...ALL_IDS];
-    cell.faceOptions[5] = [...ALL_IDS];
-
     const result = renderSuperpositionParticle(cell);
     particleGroup = result.group;
     particleFaceGroups = result.faceGroups;
     scene.add(particleGroup);
 
-    // Reset camera for single particle view
-    smoothCameraTo(new THREE.Vector3(5, 5, 5), new THREE.Vector3(0, 1, 0));
-
-    currentState = State.SINGLE_PARTICLE;
-    setOverlay('Double-click to expand into maze');
+    smoothCameraTo(new THREE.Vector3(7, 7, 7), new THREE.Vector3(0, 1, 0));
+    currentState = State.PARTICLE;
+    setOverlay('Double-click to expand');
+    setCellCount(0);
 }
 
-// ─── Expand Into Maze ──────────────────────────────────────
+// ─── State: GRID_APPEAR → CASCADING ────────────────────────
 
-function expandToMaze() {
-    if (currentState !== State.SINGLE_PARTICLE) return;
-    currentState = State.EXPANDING;
-    setOverlay('Expanding...');
+function startExpansion() {
+    if (currentState !== State.PARTICLE) return;
+    currentState = State.GRID_APPEAR;
+    setOverlay('');
 
-    // Remove single particle
-    if (particleGroup) { scene.remove(particleGroup); particleGroup = null; }
-    particleFaceGroups = null;
+    const { gridX, gridZ, targetCells } = getParams();
+    cascadeData = generateCascade(gridX, gridZ, targetCells);
+    const { gridCells, halfX, halfZ } = cascadeData;
+    const centerKey = '0,0';
 
-    // Generate maze
-    const targetSize = 30 + Math.floor(Math.random() * 21); // 30-50
-    const { collapsedChunk } = generateMaze(targetSize);
+    const result = buildGhostGrid(gridCells, centerKey);
+    gridGroup = result.gridGroup;
+    ghostMap = result.ghostMap;
+    scene.add(gridGroup);
 
-    // Render maze
-    mazeGroup = renderChunk(collapsedChunk);
-    scene.add(mazeGroup);
+    activeAnimation = createGridAppearAnimation(ghostMap, 0.5);
 
-    // Calculate maze center for camera
-    const center = getMazeCenter(collapsedChunk);
-
-    // Start expand animation
-    activeAnimation = createExpandAnimation(mazeGroup, 1.8);
-
-    // Move camera to see the whole maze
-    const dist = Math.max(targetSize * 0.6, 20);
+    const extentX = halfX * CELL_SIZE;
+    const extentZ = halfZ * CELL_SIZE;
+    const extent = Math.max(extentX, extentZ);
     smoothCameraTo(
-        new THREE.Vector3(center.x + dist * 0.7, dist * 0.5, center.z + dist * 0.7),
-        center
+        new THREE.Vector3(extent * 1.4, extent * 1.6, extent * 1.4),
+        new THREE.Vector3(0, 0, 0)
     );
 }
 
-function getMazeCenter(chunk) {
-    let cx = 0, cz = 0;
-    for (const cell of chunk.cells) {
-        cx += cell.position[0];
-        cz += cell.position[2];
+function startCascade() {
+    currentState = State.CASCADING;
+    setOverlay('');
+
+    const { collapseOrder, collapsedCells } = cascadeData;
+    const allCollapsedKeys = new Set(collapsedCells.keys());
+
+    const animOrder = [];
+    resolvedGroups = [];
+
+    for (const { key } of collapseOrder) {
+        const cell = collapsedCells.get(key);
+        if (!cell) continue;
+        const resolvedGroup = buildResolvedCell(cell, allCollapsedKeys);
+        scene.add(resolvedGroup);
+        resolvedGroups.push(resolvedGroup);
+        animOrder.push({
+            key,
+            resolvedGroup,
+            ghostGroup: ghostMap ? ghostMap.get(key) : null,
+        });
     }
-    const n = chunk.cells.length;
-    return new THREE.Vector3(
-        (cx / n) * CELL_SIZE,
-        1,
-        (cz / n) * CELL_SIZE
-    );
+
+    if (particleGroup) {
+        scene.remove(particleGroup);
+        particleGroup = null;
+        particleFaceGroups = null;
+    }
+
+    setCellCount(collapseOrder.length);
+    activeAnimation = createCascadeAnimation(animOrder, 0.3, 0.08);
 }
 
-// ─── Collapse Back ─────────────────────────────────────────
+// ─── State: COLLAPSING ─────────────────────────────────────
 
-function collapseBack() {
-    if (currentState !== State.MAZE) return;
+function startCollapse() {
+    if (currentState !== State.SPACE) return;
     currentState = State.COLLAPSING;
-    setOverlay('Collapsing...');
-
-    activeAnimation = createCollapseAnimation(mazeGroup, 1.2);
+    setOverlay('');
+    activeAnimation = createCollapseBackAnimation(resolvedGroups, ghostMap, 1.5);
 }
 
-// ─── Camera Smooth Transition ──────────────────────────────
+// ─── Cleanup ────────────────────────────────────────────────
+
+function cleanup() {
+    if (particleGroup) { scene.remove(particleGroup); particleGroup = null; }
+    if (gridGroup) { scene.remove(gridGroup); gridGroup = null; }
+    for (const rg of resolvedGroups) scene.remove(rg);
+    resolvedGroups = [];
+    ghostMap = null;
+    cascadeData = null;
+    particleFaceGroups = null;
+    activeAnimation = null;
+}
+
+// ─── Camera ────────────────────────────────────────────────
 
 let cameraTarget = null;
 let cameraLookTarget = null;
@@ -198,55 +257,33 @@ function smoothCameraTo(pos, lookAt) {
     cameraLookTarget = lookAt.clone();
 }
 
-function updateCamera(dt) {
+function updateCamera() {
     if (cameraTarget) {
-        camera.position.lerp(cameraTarget, 0.03);
-        if (camera.position.distanceTo(cameraTarget) < 0.05) {
-            camera.position.copy(cameraTarget);
-            cameraTarget = null;
-        }
+        camera.position.lerp(cameraTarget, 0.04);
+        if (camera.position.distanceTo(cameraTarget) < 0.05) cameraTarget = null;
     }
     if (cameraLookTarget) {
-        controls.target.lerp(cameraLookTarget, 0.03);
-        if (controls.target.distanceTo(cameraLookTarget) < 0.05) {
-            controls.target.copy(cameraLookTarget);
-            cameraLookTarget = null;
-        }
+        controls.target.lerp(cameraLookTarget, 0.04);
+        if (controls.target.distanceTo(cameraLookTarget) < 0.05) cameraLookTarget = null;
     }
 }
 
-// ─── Double-Click Handler ──────────────────────────────────
+// ─── Input ──────────────────────────────────────────────────
 
 let lastClick = 0;
-function onDoubleClick(e) {
-    e.preventDefault();
+function onAction(e) {
+    // Don't trigger on control panel interactions
+    if (e.target.closest('#controls')) return;
     const now = Date.now();
-    if (now - lastClick < 350) {
-        handleAction();
+    if (now - lastClick < 400) {
+        if (currentState === State.PARTICLE) startExpansion();
+        else if (currentState === State.SPACE) startCollapse();
     }
     lastClick = now;
 }
 
-function handleAction() {
-    switch (currentState) {
-        case State.SINGLE_PARTICLE:
-            expandToMaze();
-            break;
-        case State.MAZE:
-            collapseBack();
-            break;
-    }
-}
-
-renderer.domElement.addEventListener('click', onDoubleClick);
-renderer.domElement.addEventListener('touchend', (e) => {
-    onDoubleClick(e);
-});
-
-// Prevent default double-tap zoom on mobile
-renderer.domElement.addEventListener('dblclick', (e) => e.preventDefault());
-
-// ─── Resize ────────────────────────────────────────────────
+renderer.domElement.addEventListener('click', onAction);
+renderer.domElement.addEventListener('touchend', onAction);
 
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -260,49 +297,32 @@ const clock = new THREE.Clock();
 
 function animate() {
     requestAnimationFrame(animate);
-
     const dt = clock.getDelta();
     const time = clock.getElapsedTime();
 
-    // Update state-specific logic
     switch (currentState) {
-        case State.SINGLE_PARTICLE:
-            if (particleFaceGroups) {
-                updateFaceCycling(particleFaceGroups, time);
+        case State.PARTICLE:
+            if (particleFaceGroups) updateFaceCycling(particleFaceGroups, time);
+            break;
+        case State.GRID_APPEAR:
+            if (activeAnimation && activeAnimation.update(dt)) startCascade();
+            break;
+        case State.CASCADING:
+            if (activeAnimation && activeAnimation.update(dt)) {
+                currentState = State.SPACE;
+                activeAnimation = null;
+                setOverlay('Double-click to collapse back');
             }
             break;
-
-        case State.EXPANDING:
-            if (activeAnimation) {
-                const done = activeAnimation.update(dt);
-                if (done) {
-                    currentState = State.MAZE;
-                    activeAnimation = null;
-                    setOverlay('Double-click to collapse back');
-                }
-            }
-            break;
-
         case State.COLLAPSING:
-            if (activeAnimation) {
-                const done = activeAnimation.update(dt);
-                if (done) {
-                    activeAnimation = null;
-                    showSingleParticle();
-                }
-            }
-            break;
-
-        case State.MAZE:
+            if (activeAnimation && activeAnimation.update(dt)) showParticle();
             break;
     }
 
-    updateCamera(dt);
+    updateCamera();
     controls.update();
     renderer.render(scene, camera);
 }
 
-// ─── Init ──────────────────────────────────────────────────
-
-showSingleParticle();
+showParticle();
 animate();

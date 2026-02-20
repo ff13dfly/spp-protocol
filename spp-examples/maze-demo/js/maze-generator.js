@@ -1,8 +1,7 @@
 /**
- * maze-generator.js — Generates a ParticleChunk maze using randomized DFS
+ * maze-generator.js — Cascade collapse from center (dynamic grid)
  *
- * Produces a flat (Y=0) maze of 30–50 cells.
- * All horizontal faces default to WALL. Passages are explicitly carved.
+ * Accepts gridX, gridZ (odd numbers) and target cell count.
  */
 
 import {
@@ -13,14 +12,8 @@ import {
 
 const HORIZONTAL_FACES = [FACE.POS_X, FACE.NEG_X, FACE.POS_Z, FACE.NEG_Z];
 
-function posKey(x, y, z) {
-    return `${x},${y},${z}`;
-}
-
-function randomItem(arr) {
-    return arr[Math.floor(Math.random() * arr.length)];
-}
-
+function posKey(x, z) { return `${x},${z}`; }
+function randomItem(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function shuffle(arr) {
     const a = [...arr];
     for (let i = a.length - 1; i > 0; i--) {
@@ -30,118 +23,157 @@ function shuffle(arr) {
     return a;
 }
 
-/**
- * Create a cell with all horizontal faces defaulting to WALL options.
- * Y faces are empty (horizontal-only maze).
- */
-function createMazeCell(x, y, z) {
+function createGridCell(x, z) {
     return {
-        position: [x, y, z],
+        position: [x, 0, z],
         size: [1, 1, 1],
         faceStates: 0b111111,
         faceOptions: [
-            [...WALL_IDS],   // +X — wall by default
-            [...WALL_IDS],   // -X — wall by default
-            [],              // +Y — unused
-            [],              // -Y — unused
-            [...WALL_IDS],   // +Z — wall by default
-            [...WALL_IDS],   // -Z — wall by default
+            [...WALL_IDS],
+            [...WALL_IDS],
+            [],
+            [],
+            [...WALL_IDS],
+            [...WALL_IDS],
         ],
     };
 }
 
 /**
- * Generate a maze chunk.
- * @param {number} targetSize — desired number of cells (30–50)
- * @returns {{ chunk, collapsedChunk }}
+ * @param {number} gridX — grid width (odd, e.g. 7)
+ * @param {number} gridZ — grid depth (odd, e.g. 7)
+ * @param {number} targetCells — desired number of collapsed cells
  */
-export function generateMaze(targetSize = 40) {
-    const cellMap = new Map(); // posKey → cell
-    const visited = new Set();
-    const stack = [];
+export function generateCascade(gridX = 7, gridZ = 7, targetCells = 35) {
+    const halfX = Math.floor(gridX / 2);
+    const halfZ = Math.floor(gridZ / 2);
+    const target = Math.min(targetCells, gridX * gridZ);
 
-    // --- Phase 1: Build connected maze via recursive backtracker ---
-
-    const startCell = createMazeCell(0, 0, 0);
-    cellMap.set(posKey(0, 0, 0), startCell);
-    visited.add(posKey(0, 0, 0));
-    stack.push(startCell);
-
-    while (stack.length > 0 && cellMap.size < targetSize) {
-        const current = stack[stack.length - 1];
-        const [cx, cy, cz] = current.position;
-
-        // Collect unvisited horizontal neighbors
-        const unvisited = [];
-        for (const face of shuffle(HORIZONTAL_FACES)) {
-            const [dx, dy, dz] = FACE_DIRECTION[face];
-            const nx = cx + dx;
-            const ny = cy + dy;
-            const nz = cz + dz;
-            const key = posKey(nx, ny, nz);
-            if (!visited.has(key)) {
-                unvisited.push({ face, nx, ny, nz, key });
-            }
-        }
-
-        if (unvisited.length === 0) {
-            stack.pop();
-            continue;
-        }
-
-        // Pick a random unvisited neighbor
-        const chosen = unvisited[0]; // already shuffled
-        const neighborCell = createMazeCell(chosen.nx, chosen.ny, chosen.nz);
-        cellMap.set(chosen.key, neighborCell);
-        visited.add(chosen.key);
-
-        // Carve passage: BOTH sides of shared face get OPEN options
-        const oppFace = OPPOSITE_FACE[chosen.face];
-        current.faceOptions[chosen.face] = [...OPEN_IDS];
-        neighborCell.faceOptions[oppFace] = [...OPEN_IDS];
-
-        stack.push(neighborCell);
+    function inBounds(x, z) {
+        return x >= -halfX && x <= halfX && z >= -halfZ && z <= halfZ;
     }
 
-    // --- Phase 2: Collapse ---
-    // Pick one option per face. Connected faces MUST agree.
+    // Phase 1: Create grid
+    const gridCells = new Map();
+    for (let x = -halfX; x <= halfX; x++) {
+        for (let z = -halfZ; z <= halfZ; z++) {
+            gridCells.set(posKey(x, z), createGridCell(x, z));
+        }
+    }
 
-    const chunk = createChunk();
-    chunk.cells = Array.from(cellMap.values());
+    // Phase 2: Cascade from center
+    const collapsed = new Set();
+    const collapseOrder = [];
+    const connections = new Map();
 
-    const collapsedChunk = createChunk();
-    collapsedChunk.cells = chunk.cells.map(cell => collapseCell(cell));
+    const centerKey = posKey(0, 0);
+    const centerCell = gridCells.get(centerKey);
+    collapsed.add(centerKey);
+    collapseOrder.push({ key: centerKey, cell: centerCell, fromFace: -1 });
+    connections.set(centerKey, new Set());
 
-    // Enforce shared-face agreement: for every connected pair,
-    // the collapse result must be the same option on both sides.
-    for (const cell of collapsedChunk.cells) {
-        const [cx, cy, cz] = cell.position;
-        for (const face of HORIZONTAL_FACES) {
-            const [dx, dy, dz] = FACE_DIRECTION[face];
-            const neighborKey = posKey(cx + dx, cy + dy, cz + dz);
-            const neighbor = collapsedChunk.cells.find(
-                c => posKey(...c.position) === neighborKey
-            );
-            if (neighbor) {
-                const oppFace = OPPOSITE_FACE[face];
-                const myOpt = cell.faceOptions[face];
-                const theirOpt = neighbor.faceOptions[oppFace];
+    const queue = [];
 
-                // If one side is open, make the other side match
-                if (myOpt.length === 1 && theirOpt.length === 1) {
-                    const myId = myOpt[0];
-                    const theirId = theirOpt[0];
-                    // Open options (0,1,2) should agree
-                    if (OPEN_IDS.includes(myId) || OPEN_IDS.includes(theirId)) {
-                        // Use whichever is open, or pick the first cell's choice
-                        neighbor.faceOptions[oppFace] = [...myOpt];
-                    } else {
-                        // Both are walls — that's fine, no passage
-                    }
+    const centerFaces = shuffle(HORIZONTAL_FACES);
+    for (const face of centerFaces) {
+        const [dx, , dz] = FACE_DIRECTION[face];
+        if (inBounds(dx, dz) && !collapsed.has(posKey(dx, dz))) {
+            queue.push({ x: 0, z: 0, face, nx: dx, nz: dz });
+        }
+    }
+
+    while (queue.length > 0 && collapsed.size < target) {
+        const { x, z, face, nx, nz } = queue.shift();
+        const nKey = posKey(nx, nz);
+        const srcKey = posKey(x, z);
+        if (collapsed.has(nKey)) continue;
+
+        collapsed.add(nKey);
+        const cell = gridCells.get(nKey);
+
+        const oppFace = OPPOSITE_FACE[face];
+        const srcCell = gridCells.get(srcKey);
+        srcCell.faceOptions[face] = [...OPEN_IDS];
+        cell.faceOptions[oppFace] = [...OPEN_IDS];
+
+        if (!connections.has(srcKey)) connections.set(srcKey, new Set());
+        if (!connections.has(nKey)) connections.set(nKey, new Set());
+        connections.get(srcKey).add(nKey);
+        connections.get(nKey).add(srcKey);
+
+        collapseOrder.push({ key: nKey, cell, fromFace: oppFace });
+
+        const remainingFaces = shuffle(HORIZONTAL_FACES.filter(f => f !== oppFace));
+        const extraConnections = Math.floor(Math.random() * 3);
+
+        for (let i = 0; i < Math.min(extraConnections, remainingFaces.length); i++) {
+            const newFace = remainingFaces[i];
+            const [dx2, , dz2] = FACE_DIRECTION[newFace];
+            const nnx = nx + dx2;
+            const nnz = nz + dz2;
+            if (inBounds(nnx, nnz) && !collapsed.has(posKey(nnx, nnz))) {
+                queue.push({ x: nx, z: nz, face: newFace, nx: nnx, nz: nnz });
+            }
+        }
+    }
+
+    // Phase 2b: Fill up if needed
+    if (collapsed.size < target) {
+        for (const [key, cell] of gridCells) {
+            if (!collapsed.has(key)) continue;
+            if (collapsed.size >= target) break;
+            const [cx, , cz] = cell.position;
+            for (const face of shuffle(HORIZONTAL_FACES)) {
+                if (collapsed.size >= target) break;
+                const [dx, , dz] = FACE_DIRECTION[face];
+                const nx = cx + dx;
+                const nz = cz + dz;
+                const nKey = posKey(nx, nz);
+                if (inBounds(nx, nz) && !collapsed.has(nKey)) {
+                    cell.faceOptions[face] = [...OPEN_IDS];
+                    const neighbor = gridCells.get(nKey);
+                    const oppFace = OPPOSITE_FACE[face];
+                    neighbor.faceOptions[oppFace] = [...OPEN_IDS];
+                    collapsed.add(nKey);
+                    collapseOrder.push({ key: nKey, cell: neighbor, fromFace: oppFace });
+                    if (!connections.has(key)) connections.set(key, new Set());
+                    if (!connections.has(nKey)) connections.set(nKey, new Set());
+                    connections.get(key).add(nKey);
+                    connections.get(nKey).add(key);
                 }
             }
         }
     }
 
-    return { chunk, collapsedChunk };
+    // Phase 3: Collapse face options to single values
+    const collapsedCells = new Map();
+    for (const { key, cell } of collapseOrder) {
+        collapsedCells.set(key, collapseCell(cell));
+    }
+
+    for (const [key, cell] of collapsedCells) {
+        const [cx, , cz] = cell.position;
+        for (const face of HORIZONTAL_FACES) {
+            const [dx, , dz] = FACE_DIRECTION[face];
+            const nKey = posKey(cx + dx, cz + dz);
+            const neighbor = collapsedCells.get(nKey);
+            if (neighbor) {
+                const oppFace = OPPOSITE_FACE[face];
+                const myOpt = cell.faceOptions[face];
+                if (myOpt.length === 1 && OPEN_IDS.includes(myOpt[0])) {
+                    neighbor.faceOptions[oppFace] = [...myOpt];
+                }
+            }
+        }
+    }
+
+    return {
+        gridCells,
+        collapseOrder,
+        collapsedCells,
+        gridX,
+        gridZ,
+        halfX,
+        halfZ,
+    };
 }

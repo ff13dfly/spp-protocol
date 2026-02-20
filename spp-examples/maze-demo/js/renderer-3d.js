@@ -1,73 +1,82 @@
 /**
- * renderer-3d.js — Converts resolved ParticleChunk into Three.js meshes
- *
- * Renders the maze as a unified structure:
- * - Floors are seamless tiles
- * - Shared faces between adjacent cells only render once
- * - Open faces (passages) render no geometry
+ * renderer-3d.js — Clean white-background renderer
  */
 
 import * as THREE from 'three';
-import { FACE, OPPOSITE_FACE, FACE_DIRECTION, OPTION_REGISTRY, OPTION_TYPE, getResolvedOption, ALL_IDS } from './particle.js';
+import { FACE, OPPOSITE_FACE, FACE_DIRECTION, OPTION_REGISTRY, OPTION_TYPE, getResolvedOption } from './particle.js';
 
 const CELL_SIZE = 3;
 const WALL_HEIGHT = 2.8;
-const WALL_THICKNESS = 0.15;
+const WALL_THICKNESS = 0.12;
 
-// ─── Materials ──────────────────────────────────────────────
+// ─── Materials (light theme) ────────────────────────────────
 
-function createMaterials() {
-    return {
-        brick: new THREE.MeshStandardMaterial({
-            color: 0x8b4513,
-            roughness: 0.88,
-            metalness: 0.02,
-        }),
-        earth: new THREE.MeshStandardMaterial({
-            color: 0xa0855b,
-            roughness: 0.92,
-            metalness: 0.0,
-        }),
-        halfWall: new THREE.MeshStandardMaterial({
-            color: 0x9e8e7e,
-            roughness: 0.85,
-            metalness: 0.05,
-        }),
-        hedge: new THREE.MeshStandardMaterial({
-            color: 0x2d6a27,
-            roughness: 0.95,
-            metalness: 0.0,
-        }),
-        doorFrame: new THREE.MeshStandardMaterial({
-            color: 0x6b5b45,
-            roughness: 0.7,
-            metalness: 0.1,
-        }),
-        archFrame: new THREE.MeshStandardMaterial({
-            color: 0x8b7355,
-            roughness: 0.7,
-            metalness: 0.1,
-        }),
-        floor: new THREE.MeshStandardMaterial({
-            color: 0x3a3a42,
-            roughness: 0.85,
-            metalness: 0.1,
-        }),
-    };
-}
+const ghostMat = new THREE.MeshStandardMaterial({
+    color: 0x9999bb,
+    transparent: true,
+    opacity: 0.08,
+    roughness: 0.6,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+});
 
-const mats = createMaterials();
+const ghostEdgeMat = new THREE.LineBasicMaterial({
+    color: 0x9999cc,
+    transparent: true,
+    opacity: 0.2,
+});
 
-const OPTION_MATERIALS = {
-    10: mats.brick,
-    11: mats.earth,
-    12: mats.halfWall,
-    13: mats.hedge,
-    1: mats.archFrame,
-    2: mats.doorFrame,
+const edgeMat = new THREE.LineBasicMaterial({
+    color: 0x444466,
+    transparent: true,
+    opacity: 0.35,
+});
+
+const floorMat = new THREE.MeshStandardMaterial({
+    color: 0xe8e8ef,
+    roughness: 0.85,
+    metalness: 0.0,
+});
+
+const centerFloorMat = new THREE.MeshStandardMaterial({
+    color: 0x8ab4f8,
+    roughness: 0.5,
+    metalness: 0.05,
+});
+
+const wallMaterials = {
+    10: new THREE.MeshStandardMaterial({ color: 0xd4886b, roughness: 0.55, metalness: 0.05 }),  // brick
+    11: new THREE.MeshStandardMaterial({ color: 0xc8b48a, roughness: 0.65, metalness: 0.0 }),   // earth
+    12: new THREE.MeshStandardMaterial({ color: 0xccccd5, roughness: 0.4, metalness: 0.1, transparent: true, opacity: 0.7 }),  // half wall - glass
+    13: new THREE.MeshStandardMaterial({ color: 0x6aad5e, roughness: 0.7, metalness: 0.0 }),    // hedge
+    1: new THREE.MeshStandardMaterial({ color: 0x9988bb, roughness: 0.4, metalness: 0.1 }),    // arch
+    2: new THREE.MeshStandardMaterial({ color: 0x7799bb, roughness: 0.4, metalness: 0.1 }),    // door
 };
 
-// ─── Geometry Builders ──────────────────────────────────────
+// ─── Ghost Block ────────────────────────────────────────────
+
+function createGhostBlock(x, z) {
+    const group = new THREE.Group();
+    group.position.set(x * CELL_SIZE, 0, z * CELL_SIZE);
+
+    const boxGeo = new THREE.BoxGeometry(CELL_SIZE * 0.92, WALL_HEIGHT * 0.25, CELL_SIZE * 0.92);
+    const box = new THREE.Mesh(boxGeo, ghostMat);
+    box.position.y = WALL_HEIGHT * 0.125;
+    group.add(box);
+
+    const edges = new THREE.EdgesGeometry(boxGeo);
+    const lines = new THREE.LineSegments(edges, ghostEdgeMat);
+    lines.position.y = WALL_HEIGHT * 0.125;
+    group.add(lines);
+
+    group.userData.gridPos = [x, z];
+    group.userData.isGhost = true;
+
+    return group;
+}
+
+// ─── Wall Geometry Builders ─────────────────────────────────
 
 function buildSolidWall(height) {
     return new THREE.BoxGeometry(CELL_SIZE, height, WALL_THICKNESS);
@@ -80,16 +89,13 @@ function buildArchWall() {
     shape.lineTo(-halfCell, WALL_HEIGHT);
     shape.lineTo(halfCell, WALL_HEIGHT);
     shape.lineTo(halfCell, 0);
-    shape.lineTo(halfCell, 0);
 
-    // Arch hole
-    const archW = 0.75;
-    const archH = 2.0;
+    const archW = 0.8, archH = 2.1;
     const hole = new THREE.Path();
     hole.moveTo(archW, 0);
-    hole.lineTo(archW, archH * 0.6);
+    hole.lineTo(archW, archH * 0.7);
     hole.quadraticCurveTo(archW, archH, 0, archH);
-    hole.quadraticCurveTo(-archW, archH, -archW, archH * 0.6);
+    hole.quadraticCurveTo(-archW, archH, -archW, archH * 0.7);
     hole.lineTo(-archW, 0);
     shape.holes.push(hole);
 
@@ -104,8 +110,7 @@ function buildRectDoorWall() {
     shape.lineTo(halfCell, WALL_HEIGHT);
     shape.lineTo(halfCell, 0);
 
-    const doorW = 0.7;
-    const doorH = 2.0;
+    const doorW = 0.75, doorH = 2.05;
     const hole = new THREE.Path();
     hole.moveTo(-doorW, 0);
     hole.lineTo(-doorW, doorH);
@@ -116,17 +121,12 @@ function buildRectDoorWall() {
     return new THREE.ExtrudeGeometry(shape, { depth: WALL_THICKNESS, bevelEnabled: false });
 }
 
-/**
- * Create a wall mesh for a given option id.
- * Returns a mesh positioned at (0,0,0) facing +Z.
- * Returns null for option 0 (empty / open).
- */
 function createWallMesh(optionId) {
     const opt = OPTION_REGISTRY[optionId];
     if (!opt || (opt.type === OPTION_TYPE.OPEN && optionId === 0)) return null;
 
+    const mat = wallMaterials[optionId] || wallMaterials[10];
     let geo;
-    const mat = OPTION_MATERIALS[optionId] || mats.brick;
 
     if (opt.type === OPTION_TYPE.WALL) {
         const h = opt.halfHeight ? WALL_HEIGHT * 0.45 : WALL_HEIGHT;
@@ -138,161 +138,132 @@ function createWallMesh(optionId) {
         geo = buildArchWall();
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.z = -WALL_THICKNESS / 2;
+        mesh.position.y = 0.04; // clear the floor to prevent z-fighting
         return mesh;
     } else if (optionId === 2) {
         geo = buildRectDoorWall();
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.z = -WALL_THICKNESS / 2;
+        mesh.position.y = 0.04; // clear the floor to prevent z-fighting
         return mesh;
     }
     return null;
 }
 
-/**
- * Position a wall mesh at the correct face of a cell.
- * @param {THREE.Object3D} mesh
- * @param {number} faceIndex
- * @param {number[]} worldPos  [x, y, z] in world units
- */
 function positionWall(mesh, faceIndex, worldPos) {
     const half = CELL_SIZE / 2;
     const [cx, cy, cz] = worldPos;
-
     const wrapper = new THREE.Group();
     wrapper.add(mesh);
 
     switch (faceIndex) {
-        case FACE.POS_X:
-            wrapper.position.set(cx + half, cy, cz);
-            wrapper.rotation.y = Math.PI / 2;
-            break;
-        case FACE.NEG_X:
-            wrapper.position.set(cx - half, cy, cz);
-            wrapper.rotation.y = -Math.PI / 2;
-            break;
-        case FACE.POS_Z:
-            wrapper.position.set(cx, cy, cz + half);
-            wrapper.rotation.y = 0;
-            break;
-        case FACE.NEG_Z:
-            wrapper.position.set(cx, cy, cz - half);
-            wrapper.rotation.y = Math.PI;
-            break;
+        case FACE.POS_X: wrapper.position.set(cx + half, cy, cz); wrapper.rotation.y = Math.PI / 2; break;
+        case FACE.NEG_X: wrapper.position.set(cx - half, cy, cz); wrapper.rotation.y = -Math.PI / 2; break;
+        case FACE.POS_Z: wrapper.position.set(cx, cy, cz + half); wrapper.rotation.y = 0; break;
+        case FACE.NEG_Z: wrapper.position.set(cx, cy, cz - half); wrapper.rotation.y = Math.PI; break;
     }
-
     return wrapper;
 }
 
-// ─── Chunk Renderer ─────────────────────────────────────────
-
-function posKey(x, y, z) { return `${x},${y},${z}`; }
+// ─── Resolved Cell ──────────────────────────────────────────
 
 const HORIZONTAL_FACES = [FACE.POS_X, FACE.NEG_X, FACE.POS_Z, FACE.NEG_Z];
 
-/**
- * Render an entire collapsed chunk as a unified maze.
- * Eliminates double-rendering of shared walls.
- */
-export function renderChunk(collapsedChunk) {
-    const parent = new THREE.Group();
+function renderResolvedCell(cell, allCollapsed) {
+    const group = new THREE.Group();
+    const [px, , pz] = cell.position;
+    const isCenter = (px === 0 && pz === 0);
+    group.position.set(px * CELL_SIZE, 0, pz * CELL_SIZE);
 
-    // Build position lookup for neighbor detection
-    const cellMap = new Map();
-    for (const cell of collapsedChunk.cells) {
-        cellMap.set(posKey(...cell.position), cell);
+    // Floor — center gets a distinct color
+    const floorGeo = new THREE.PlaneGeometry(CELL_SIZE * 0.98, CELL_SIZE * 0.98);
+    const floor = new THREE.Mesh(floorGeo, isCenter ? centerFloorMat : floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = 0.01;
+    group.add(floor);
+
+    // Center marker dot
+    if (isCenter) {
+        const dotGeo = new THREE.CircleGeometry(0.3, 24);
+        const dotMat = new THREE.MeshStandardMaterial({ color: 0x4285f4, roughness: 0.3 });
+        const dot = new THREE.Mesh(dotGeo, dotMat);
+        dot.rotation.x = -Math.PI / 2;
+        dot.position.y = 0.03;
+        group.add(dot);
     }
 
-    // Track which face-pairs have been rendered (to avoid doubles)
-    const renderedFaces = new Set();
+    // Floor edge outline
+    const floorEdgeGeo = new THREE.EdgesGeometry(floorGeo);
+    const floorEdges = new THREE.LineSegments(floorEdgeGeo, edgeMat);
+    floorEdges.rotation.x = -Math.PI / 2;
+    floorEdges.position.y = 0.02;
+    group.add(floorEdges);
 
-    for (const cell of collapsedChunk.cells) {
-        const [px, py, pz] = cell.position;
-        const wp = [px * CELL_SIZE, 0, pz * CELL_SIZE];
+    // Walls
+    for (const fi of HORIZONTAL_FACES) {
+        const optionId = getResolvedOption(cell, fi);
+        if (optionId === null) continue;
 
-        // Floor tile
-        const floorGeo = new THREE.PlaneGeometry(CELL_SIZE, CELL_SIZE);
-        const floor = new THREE.Mesh(floorGeo, mats.floor);
-        floor.rotation.x = -Math.PI / 2;
-        floor.position.set(wp[0], 0, wp[2]);
-        floor.receiveShadow = true;
-        parent.add(floor);
+        const [dx, , dz] = FACE_DIRECTION[fi];
+        const neighborKey = `${px + dx},${pz + dz}`;
+        if (allCollapsed.has(neighborKey) && fi > OPPOSITE_FACE[fi]) continue;
 
-        // Walls (horizontal faces only)
-        for (const fi of HORIZONTAL_FACES) {
-            const optionId = getResolvedOption(cell, fi);
-            if (optionId === null) continue;
-
-            // Create a unique key for this face-pair to avoid rendering twice
-            const [dx, , dz] = FACE_DIRECTION[fi];
-            const neighborKey = posKey(px + dx, py, pz + dz);
-            const faceKey = [posKey(px, py, pz), fi].join(':');
-            const oppFaceKey = [neighborKey, OPPOSITE_FACE[fi]].join(':');
-
-            if (renderedFaces.has(oppFaceKey)) continue; // already rendered by neighbor
-            renderedFaces.add(faceKey);
-
-            const mesh = createWallMesh(optionId);
-            if (mesh) {
-                const positioned = positionWall(mesh, fi, wp);
-                positioned.userData.cellPosition = wp;
-                positioned.userData.gridPosition = [px, py, pz];
-                parent.add(positioned);
-            }
+        const mesh = createWallMesh(optionId);
+        if (mesh) {
+            group.add(positionWall(mesh, fi, [0, 0, 0]));
         }
     }
 
-    // Tag all direct children with position info for animation
-    for (const child of parent.children) {
-        if (!child.userData.cellPosition) {
-            // Floor tiles etc — derive from position
-            child.userData.cellPosition = [child.position.x, 0, child.position.z];
-            child.userData.gridPosition = [
-                Math.round(child.position.x / CELL_SIZE),
-                0,
-                Math.round(child.position.z / CELL_SIZE),
-            ];
-        }
-    }
+    group.scale.set(0.001, 0.001, 0.001);
+    group.visible = false;
+    group.userData.gridPos = [px, pz];
+    group.userData.isResolved = true;
 
-    return parent;
+    return group;
 }
 
-/**
- * Render a single superposition particle (face options cycling).
- */
+// ─── Public API ─────────────────────────────────────────────
+
+export function buildGhostGrid(gridCells, centerKey) {
+    const gridGroup = new THREE.Group();
+    const ghostMap = new Map();
+
+    for (const [key, cell] of gridCells) {
+        if (key === centerKey) continue;
+        const [x, , z] = cell.position;
+        const ghost = createGhostBlock(x, z);
+        gridGroup.add(ghost);
+        ghostMap.set(key, ghost);
+    }
+
+    return { gridGroup, ghostMap };
+}
+
+export function buildResolvedCell(cell, allCollapsedKeys) {
+    return renderResolvedCell(cell, allCollapsedKeys);
+}
+
 export function renderSuperpositionParticle(cell) {
     const group = new THREE.Group();
+    group.position.y = 0.15; // raise above ground to prevent z-fighting
 
     // Floor
     const floorGeo = new THREE.PlaneGeometry(CELL_SIZE, CELL_SIZE);
-    const floor = new THREE.Mesh(floorGeo, mats.floor);
+    const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
     group.add(floor);
 
-    // Translucent bounding box
+    // Wireframe bounding box — raised slightly so bottom edge clears the floor
     const boxGeo = new THREE.BoxGeometry(CELL_SIZE, WALL_HEIGHT, CELL_SIZE);
-    const boxMat = new THREE.MeshStandardMaterial({
-        color: 0x4488ff,
-        transparent: true,
-        opacity: 0.05,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-    });
-    const box = new THREE.Mesh(boxGeo, boxMat);
-    box.position.y = WALL_HEIGHT / 2;
-    group.add(box);
-
-    // Edge glow
     const edges = new THREE.EdgesGeometry(boxGeo);
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x4488ff, transparent: true, opacity: 0.3 });
-    const lines = new THREE.LineSegments(edges, lineMat);
-    lines.position.y = WALL_HEIGHT / 2;
+    const eMat = new THREE.LineBasicMaterial({ color: 0x8899bb, transparent: true, opacity: 0.35 });
+    const lines = new THREE.LineSegments(edges, eMat);
+    lines.position.y = WALL_HEIGHT / 2 + 0.05;
     group.add(lines);
 
-    // Face option meshes (toggle visibility for cycling)
+    // Face option cycling
     const faceGroups = {};
     const wp = [0, 0, 0];
-
     for (const fi of HORIZONTAL_FACES) {
         const opts = cell.faceOptions[fi];
         faceGroups[fi] = [];
@@ -312,4 +283,4 @@ export function renderSuperpositionParticle(cell) {
     return { group, faceGroups };
 }
 
-export { CELL_SIZE };
+export { CELL_SIZE, WALL_HEIGHT };
