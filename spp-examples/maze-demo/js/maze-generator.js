@@ -177,3 +177,38 @@ export function generateCascade(gridX = 7, gridZ = 7, targetCells = 35) {
         halfZ,
     };
 }
+
+/**
+ * BFS pathfinding between two points in collapsed space
+ */
+export function findPath(collapsedCells, startKey, endKey) {
+    if (!collapsedCells.has(startKey) || !collapsedCells.has(endKey)) return null;
+    if (startKey === endKey) return [startKey];
+
+    const queue = [[startKey]];
+    const visited = new Set([startKey]);
+
+    while (queue.length > 0) {
+        const path = queue.shift();
+        const currKey = path[path.length - 1];
+        const cell = collapsedCells.get(currKey);
+
+        const [cx, , cz] = cell.position;
+        for (const face of HORIZONTAL_FACES) {
+            const myOpt = cell.faceOptions[face];
+            // Only proceed if there is an open connection on this face
+            if (myOpt.length === 1 && OPEN_IDS.includes(myOpt[0])) {
+                const [dx, , dz] = FACE_DIRECTION[face];
+                const nextKey = `${cx + dx},${cz + dz}`;
+
+                if (nextKey === endKey) return [...path, nextKey];
+                if (collapsedCells.has(nextKey) && !visited.has(nextKey)) {
+                    visited.add(nextKey);
+                    queue.push([...path, nextKey]);
+                }
+            }
+        }
+    }
+
+    return null;
+}

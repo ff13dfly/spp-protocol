@@ -283,4 +283,61 @@ export function renderSuperpositionParticle(cell) {
     return { group, faceGroups };
 }
 
+// ─── Path Visualization ─────────────────────────────────────
+
+let pathGroup = null;
+
+export function clearPath(scene) {
+    if (pathGroup) {
+        scene.remove(pathGroup);
+        pathGroup = null;
+    }
+}
+
+export function renderPath(scene, path, collapsedCells) {
+    clearPath(scene);
+    if (!path || path.length < 2) return;
+
+    pathGroup = new THREE.Group();
+    scene.add(pathGroup);
+
+    const points = [];
+    const pathMat = new THREE.MeshStandardMaterial({
+        color: 0x4285f4,
+        transparent: true,
+        opacity: 0.4,
+        emissive: 0x4285f4,
+        emissiveIntensity: 0.5,
+    });
+
+    for (let i = 0; i < path.length; i++) {
+        const key = path[i];
+        const cell = collapsedCells.get(key);
+        if (!cell) continue;
+
+        const [px, , pz] = cell.position;
+        const wx = px * CELL_SIZE;
+        const wz = pz * CELL_SIZE;
+        points.push(new THREE.Vector3(wx, 0.05, wz));
+
+        // Highlight floor of path cells
+        const highlightGeo = new THREE.PlaneGeometry(CELL_SIZE * 0.8, CELL_SIZE * 0.8);
+        const highlight = new THREE.Mesh(highlightGeo, pathMat);
+        highlight.rotation.x = -Math.PI / 2;
+        highlight.position.set(wx, 0.04, wz);
+        pathGroup.add(highlight);
+    }
+
+    // Draw a continuous line above the floor
+    const curve = new THREE.CatmullRomCurve3(points);
+    const tubeGeo = new THREE.TubeGeometry(curve, path.length * 4, 0.08, 8, false);
+    const tubeMat = new THREE.MeshStandardMaterial({
+        color: 0x4285f4,
+        emissive: 0x4285f4,
+        emissiveIntensity: 1.0,
+    });
+    const tube = new THREE.Mesh(tubeGeo, tubeMat);
+    pathGroup.add(tube);
+}
+
 export { CELL_SIZE, WALL_HEIGHT };

@@ -20,6 +20,9 @@ import {
     createCollapseBackAnimation,
 } from './animations.js';
 
+import { findPath } from './maze-generator.js';
+import { renderPath, clearPath } from './renderer-3d.js';
+
 // ─── State ──────────────────────────────────────────────────
 
 const State = {
@@ -190,6 +193,7 @@ function startExpansion() {
         new THREE.Vector3(extent * 1.4, extent * 1.6, extent * 1.4),
         new THREE.Vector3(0, 0, 0)
     );
+    clearPath(scene);
 }
 
 function startCascade() {
@@ -231,6 +235,7 @@ function startCollapse() {
     if (currentState !== State.SPACE) return;
     currentState = State.COLLAPSING;
     setOverlay('');
+    clearPath(scene);
     activeAnimation = createCollapseBackAnimation(resolvedGroups, ghostMap, 1.5);
 }
 
@@ -278,8 +283,42 @@ function onAction(e) {
     if (now - lastClick < 400) {
         if (currentState === State.PARTICLE) startExpansion();
         else if (currentState === State.SPACE) startCollapse();
+    } else {
+        // Single click navigation
+        if (currentState === State.SPACE) {
+            handleNavigation(e);
+        }
     }
     lastClick = now;
+}
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+function handleNavigation(e) {
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObjects(resolvedGroups, true);
+
+    if (intersects.length > 0) {
+        // Find the parent group which contains the gridPos
+        let obj = intersects[0].object;
+        while (obj && !obj.userData.gridPos) {
+            obj = obj.parent;
+        }
+
+        if (obj && obj.userData.gridPos) {
+            const [tx, tz] = obj.userData.gridPos;
+            const targetKey = `${tx},${tz}`;
+            const path = findPath(cascadeData.collapsedCells, '0,0', targetKey);
+            if (path) {
+                renderPath(scene, path, cascadeData.collapsedCells);
+                setOverlay(`Path to [${tx}, ${tz}]: ${path.length - 1} steps`);
+            }
+        }
+    }
 }
 
 renderer.domElement.addEventListener('click', onAction);
