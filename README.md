@@ -30,3 +30,5 @@ SPP is designed to:
 
 Copyright (c) 2026 傅忠强 (Zhongqiang Fu).
 Licensed under [CC BY-NC 4.0](./LICENSE) — free for non-commercial use; commercial use requires authorization.
+
+For a list of entities granted explicit commercial use exceptions, please refer to [EXCEPTIONS.md](./EXCEPTIONS.md).
