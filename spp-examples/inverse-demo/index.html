@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPP Inverse Modeling — Floor Plan → 3D</title>
+    <style>
+        :root {
+            --bg: #f5f5fa;
+            --panel-bg: #ffffff;
+            --border: #e2e2ea;
+            --text: #2a2a3a;
+            --text-muted: #8888aa;
+            --accent: #4285f4;
+            --accent-light: #e8f0fe;
+            --success: #34a853;
+            --error: #ea4335;
+            --radius: 10px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* ─── Header ───────────────────────────── */
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px;
+            background: var(--panel-bg);
+            border-bottom: 1px solid var(--border);
+            height: 52px;
+        }
+
+        header h1 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        header h1 span {
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        header .subtitle {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        /* ─── Layout ───────────────────────────── */
+        .container {
+            display: flex;
+            height: calc(100vh - 52px);
+        }
+
+        .panel-left {
+            width: 340px;
+            min-width: 340px;
+            background: var(--panel-bg);
+            border-right: 1px solid var(--border);
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            overflow-y: auto;
+        }
+
+        .panel-right {
+            flex: 1;
+            position: relative;
+        }
+
+        canvas {
+            width: 100% !important;
+            height: 100% !important;
+            display: block;
+        }
+
+        /* ─── Controls ─────────────────────────── */
+        .section-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .api-key-row {
+            display: flex;
+            gap: 6px;
+        }
+
+        .api-key-row input {
+            flex: 1;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            background: #fafafe;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .api-key-row input:focus {
+            border-color: var(--accent);
+        }
+
+        .model-select {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: inherit;
+            background: #fafafe;
+            outline: none;
+            cursor: pointer;
+            transition: border-color 0.2s;
+            -webkit-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238888aa' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+            padding-right: 28px;
+        }
+
+        .model-select:focus {
+            border-color: var(--accent);
+        }
+
+        /* ─── Upload Area ──────────────────────── */
+        .upload-area {
+            border: 2px dashed var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            min-height: 160px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .upload-area:hover,
+        .upload-area.drag-over {
+            border-color: var(--accent);
+            background: var(--accent-light);
+        }
+
+        .upload-area img {
+            max-width: 100%;
+            max-height: 200px;
+            border-radius: 6px;
+            object-fit: contain;
+        }
+
+        .upload-placeholder {
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .upload-placeholder .icon {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        /* ─── Buttons ──────────────────────────── */
+        .btn {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+            width: 100%;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: #3367d6;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(66, 133, 244, 0.3);
+        }
+
+        .btn-primary:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            color: var(--accent);
+            border: 1px solid var(--border);
+            width: 100%;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: var(--accent-light);
+        }
+
+        .btn-secondary:disabled {
+            color: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* ─── Status ───────────────────────────── */
+        #statusText {
+            font-size: 12px;
+            padding: 8px 10px;
+            border-radius: 6px;
+            background: #f8f8fc;
+            min-height: 32px;
+            line-height: 1.4;
+        }
+
+        .status-loading {
+            color: var(--accent);
+            background: var(--accent-light) !important;
+        }
+
+        .status-success {
+            color: var(--success);
+            background: #e6f4ea !important;
+        }
+
+        .status-error {
+            color: var(--error);
+            background: #fce8e6 !important;
+        }
+
+        .status-info {
+            color: var(--text-muted);
+        }
+
+        /* ─── Description ──────────────────────── */
+        #descriptionText {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-style: italic;
+            min-height: 16px;
+        }
+
+        /* ─── JSON Output ──────────────────────── */
+        .json-container {
+            flex: 1;
+            min-height: 120px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #jsonOutput {
+            flex: 1;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 10px;
+            line-height: 1.5;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            border-radius: var(--radius);
+            padding: 10px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        /* ─── Edit Info ────────────────────────── */
+        #editInfo {
+            font-size: 11px;
+            color: var(--text-muted);
+            background: var(--accent-light);
+            padding: 8px 10px;
+            border-radius: 6px;
+            display: none;
+        }
+
+        /* ─── 3D Overlay Info ──────────────────── */
+        .viewport-badge {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(8px);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            color: var(--text-muted);
+            pointer-events: none;
+        }
+
+        /* ─── Loading Spinner ──────────────────── */
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .status-loading::before {
+            content: '';
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid var(--accent);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <header>
+        <div>
+            <h1><span>SPP</span> Inverse Modeling</h1>
+            <div class="subtitle">Floor Plan → ParticleCell → 3D Space</div>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Left Panel -->
+        <div class="panel-left">
+            <div>
+                <div class="section-title">Model</div>
+                <select id="modelSelect" class="model-select"></select>
+            </div>
+
+            <div>
+                <div class="section-title">API Key</div>
+                <div class="api-key-row">
+                    <input type="password" id="apiKey" placeholder="Enter API key..." autocomplete="off">
+                </div>
+            </div>
+
+            <div>
+                <div class="section-title">Floor Plan Image</div>
+                <div class="upload-area" id="uploadArea">
+                    <div id="uploadPlaceholder" class="upload-placeholder">
+                        <div class="icon">📐</div>
+                        <div>Click or drag to upload</div>
+                        <div style="font-size:11px; margin-top:4px; color:#aaa">PNG, JPG, WebP</div>
+                    </div>
+                    <img id="imagePreview" style="display:none" alt="Floor plan preview">
+                    <input type="file" id="fileInput" accept="image/*">
+                </div>
+            </div>
+
+            <button id="analyzeBtn" class="btn btn-primary" disabled>
+                ✨ Analyze & Reconstruct
+            </button>
+
+            <div id="statusText" class="status-info">Upload a floor plan image to begin.</div>
+
+            <div id="descriptionText"></div>
+
+            <div id="editInfo">
+                💡 Click any wall in the 3D view to cycle through options (wall → door → window → open → ...)
+            </div>
+
+            <div class="json-container">
+                <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
+                    SPP Output
+                    <button id="exportBtn" class="btn btn-secondary"
+                        style="width: auto; padding: 4px 10px; font-size: 11px;" disabled>
+                        Export JSON
+                    </button>
+                </div>
+                <pre id="jsonOutput">{ "cells": [] }</pre>
+            </div>
+        </div>
+
+        <!-- Right Panel: 3D Viewport -->
+        <div class="panel-right">
+            <canvas id="canvas3d"></canvas>
+            <div class="viewport-badge">SPP 3D Viewport — Orbit: drag · Zoom: scroll</div>
+        </div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module" src="js/main.js"></script>
+</body>
+
+</html>
