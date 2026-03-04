@@ -175,6 +175,8 @@ This section is informative (non-normative).
 | WFC                 | Tiles              | Local Rules      |
 | **SPP (String Particle)** | Spatial Node + Options | Semantic Collapse |
 
+For a discussion of spatial coverage strategies (tessellation vs. sparse placement) and multi-scale arrangements, see [SPP-Spatial-Coverage](./SPP-Spatial-Coverage.md).
+
 ---
 
 ## 7. Example
@@ -230,6 +232,8 @@ A typical end-to-end flow using SPP-Core:
 3. A collapse algorithm resolves each face       (Stage 2 — external)
 4. An engine unfolds the result into 3D space    (Stage 3 — external)
 ```
+
+For the inverse process — reconstructing SPP data from real-world observations — see [SPP-Inverse-Modeling](./SPP-Inverse-Modeling.md).
 
 ---
 

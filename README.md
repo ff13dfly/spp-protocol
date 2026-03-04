@@ -16,6 +16,8 @@ SPP is designed to:
 | Document | Description | Status |
 | -------- | ----------- | ------ |
 | [SPP-Core v1.0](./specs/SPP-Core-v1.0.md) | Core semantic data model | Stable |
+| [SPP-Spatial-Coverage](./specs/SPP-Spatial-Coverage.md) | Spatial coverage theory | Informative |
+| [SPP-Inverse-Modeling](./specs/SPP-Inverse-Modeling.md) | Inverse modeling and 3D reconstruction | Informative |
 
 ## Repository Layout
 
