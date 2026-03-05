@@ -1,64 +1,120 @@
 /**
- * prompt.js — Builds the prompt and calls multimodal AI APIs
+ * prompt.js — Two-step AI analysis for SPP inverse modeling
+ * Step 1: Detect floor plan bounds + fine-grained grid + room mapping
+ * Step 2: Classify each cell's faces
  * Supports: Qwen (通义千问), Gemini
  */
 
-const SYSTEM_PROMPT = `You are an SPP (String Particle Protocol) spatial analyzer. Your task is to analyze a floor plan image and output a grid of ParticleCells in JSON format.
+// ─── Step 1 Prompt: Crop + Fine-Grained Grid Sizing ─────────
 
-## SPP Data Model
+const STEP1_PROMPT = `You are a spatial layout analyzer. Given a floor plan image, first locate the floor plan boundary, then overlay a fine-grained grid that preserves room proportions.
 
-Each ParticleCell has:
-- position: [x, 0, z] — grid coordinates (y is always 0 for a single floor)
-- faceOptions: array of 6 elements, one per face direction:
-  [+X (right), -X (left), +Y (up), -Y (down), +Z (front), -Z (back)]
-  Each element is an array containing exactly ONE option ID.
-  +Y and -Y should always be [] (not used for floor plans).
+## Task
 
-## Option Registry
+### Phase A: Detect floor plan bounds
+Find the bounding box of the actual floor plan (the outer walls), EXCLUDING any labels, titles, dimensions, margins, or whitespace around it.
+Express the bounds as normalized coordinates (0.0 to 1.0) relative to the full image:
+- cropX: left edge of the outer wall
+- cropY: top edge of the outer wall
+- cropW: width of the floor plan area
+- cropH: height of the floor plan area
 
-Open types (connections/passages):
-- 0: Empty (open passage, no wall)
-- 1: Arch Door (arched doorway)
-- 2: Rectangular Door (standard door frame)
+### Phase B: Overlay grid WITHIN the bounds
+Create a grid that covers ONLY the floor plan area (not the margins):
+- Large rooms span MULTIPLE cells (e.g., a living room might be 2×2 cells)
+- Small rooms span fewer cells (e.g., a bathroom might be 1×1)
+- Narrow spaces like hallways span 1 cell wide but may be multiple cells long
+- The grid must preserve approximate room SIZE RATIOS
 
-Wall types (barriers):
-- 10: Brick Wall (solid wall)
-- 11: Earth Wall (solid wall, different style)
-- 12: Half-height Wall (half-height barrier)
-- 13: Green Hedge (plant wall)
-- 20: Window (wall with window)
+## Rules
+1. Study the image and estimate each room's relative width and height
+2. Choose a common unit size such that rooms fit as integer multiples
+3. Assign each cell a room name — cells belonging to the same room share the same name
+4. Use null for cells that are exterior (outside the building)
+5. The grid should be between 4×4 and 12×12 for typical apartments
+6. CRITICAL: the grid must preserve proportions — a room twice as wide should span twice as many columns
+7. **Wall snapping**: When a physical wall does not perfectly align with a cell boundary, assign the cell to whichever room occupies MORE of that cell's area. Walls must always land on cell boundaries.
+8. **Rectangular rooms**: Each room should form a contiguous rectangular block. Avoid L-shaped or jagged room assignments.
+9. **Minimum room size**: Every room must have at least 1 cell. Do not let small rooms (e.g., bathroom) disappear due to snapping.
+
+## Output
+Return ONLY a JSON object (no markdown, no explanation):
+{
+  "crop": { "x": <float 0-1>, "y": <float 0-1>, "w": <float 0-1>, "h": <float 0-1> },
+  "gridX": <columns>,
+  "gridZ": <rows>,
+  "layout": [
+    ["Room A", "Room A", "Room B", ...],
+    ["Room A", "Room A", "Room B", ...],
+    ...
+  ]
+}
+
+Where layout[row][col] is the room name for that cell, or null for exterior cells.
+Example:
+{
+  "crop": { "x": 0.08, "y": 0.10, "w": 0.84, "h": 0.82 },
+  "gridX": 5,
+  "gridZ": 4,
+  "layout": [
+    ["Kitchen", "Kitchen", "Hallway", "Bathroom", "Bathroom"],
+    ["Kitchen", "Kitchen", "Hallway", "Bathroom", "Bathroom"],
+    ["Living Room", "Living Room", "Hallway", "Bedroom", "Bedroom"],
+    ["Living Room", "Living Room", "Hallway", "Bedroom", "Bedroom"]
+  ]
+}`;
+
+// ─── Step 2 Prompt: Face Classification ─────────────────────
+
+const STEP2_PROMPT = `You are an SPP (String Particle Protocol) spatial analyzer. Given a floor plan image and a fine-grained grid layout, classify each cell's face connections.
+
+## Grid Layout (from Step 1)
+GRID_X: __GRID_X__
+GRID_Z: __GRID_Z__
+Layout:
+__LAYOUT__
+
+## SPP Face Options
+
+Each cell has 6 faces. Classify the 4 horizontal faces:
+Face order: [+X (right), -X (left), +Y (up), -Y (down), +Z (front/up-in-image), -Z (back/down-in-image)]
++Y and -Y are always [] (unused for single-floor plans).
+
+### Option IDs
+
+- 0: **Open** — no wall, passage continues (SAME room cells adjacent to each other)
+- 2: **Door** — doorway between DIFFERENT rooms
+- 10: **Wall** — solid wall (interior wall between rooms, or exterior wall)
+- 20: **Window** — exterior wall with window
 
 ## Rules
 
-1. Overlay a grid on the floor plan. Each cell represents one room-sized unit.
-2. Only create cells where there is INTERIOR space (rooms, corridors). Do NOT create cells for exterior/outside areas.
-3. For each cell, determine what is on each of its 4 horizontal faces (+X, -X, +Z, -Z):
-   - If that face borders another interior cell with a doorway: use 2 (rectangular door)
-   - If that face borders another interior cell with an open passage (no wall between rooms): use 0 (empty/open)
-   - If that face borders another interior cell with a wall between them: use 10 (brick wall)
-   - If that face is an exterior wall: use 10 (brick wall)
-   - If that face has a window on an exterior wall: use 20 (window)
-4. Make sure adjacent cells have MATCHING face options (if cell A's +X is "door", then the cell to its right's -X must also be "door").
-5. Use the SMALLEST grid that covers the floor plan. Typical floor plans need 3×3 to 7×7 cells.
+1. **Same-room adjacency**: If two adjacent cells belong to the SAME room → use 0 (open) between them. This is critical for rooms spanning multiple cells.
+2. **Different-room adjacency with door**: If adjacent cells are DIFFERENT rooms connected by a doorway → use 2 (door).
+3. **Different-room adjacency with wall**: If adjacent cells are DIFFERENT rooms separated by a wall → use 10 (wall).
+4. **Exterior face**: face at the edge of the building:
+   - Use 20 (window) for living rooms, bedrooms, and kitchens (they typically have windows)
+   - Use 10 (wall) for bathrooms and hallways
+5. **Symmetry**: Adjacent faces MUST match — if cell A's +X is door, the neighbor's -X must also be door.
+6. **Door placement**: Doors between rooms should appear on only ONE cell-pair boundary, not across the entire room border.
 
-## Output Format
+## Output
 
-Return ONLY a valid JSON object (no markdown fences, no explanation, no comments):
-
+Return ONLY a JSON object (no markdown, no explanation):
 {
-  "gridX": <number of columns>,
-  "gridZ": <number of rows>,
-  "description": "<brief description of the floor plan>",
+  "gridX": __GRID_X__,
+  "gridZ": __GRID_Z__,
+  "description": "<brief description>",
   "cells": [
     {
       "position": [x, 0, z],
+      "room": "<room name>",
       "faceOptions": [[id], [id], [], [], [id], [id]]
     }
   ]
 }
 
-Where x ranges from 0 to gridX-1 and z ranges from 0 to gridZ-1.
-The cells array should only contain cells where there is interior space.`;
+Only include cells where layout is NOT null.`;
 
 // ─── Model Definitions ─────────────────────────────────────
 
@@ -98,42 +154,26 @@ function fileToBase64(file) {
     });
 }
 
-// ─── Qwen API (OpenAI-compatible) ───────────────────────────
+// ─── Generic API Callers ────────────────────────────────────
 
-async function callQwen(apiKey, imageFile, modelId, onStatus) {
-    onStatus('Converting image...');
-    const dataUrl = await fileToBase64(imageFile);
-
-    onStatus(`Sending to ${modelId}...`);
-
-    const url = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
-
+async function callQwen(apiKey, imageDataUrl, systemPrompt, userText, modelId) {
     const body = {
         model: modelId,
         messages: [
-            {
-                role: 'system',
-                content: SYSTEM_PROMPT,
-            },
+            { role: 'system', content: systemPrompt },
             {
                 role: 'user',
                 content: [
-                    {
-                        type: 'image_url',
-                        image_url: { url: dataUrl },
-                    },
-                    {
-                        type: 'text',
-                        text: 'Analyze this floor plan and output SPP ParticleCell JSON. Return ONLY the JSON object, no other text.',
-                    },
+                    { type: 'image_url', image_url: { url: imageDataUrl } },
+                    { type: 'text', text: userText },
                 ],
             },
         ],
-        temperature: 0.2,
-        max_tokens: 4096,
+        temperature: 0.1,
+        max_tokens: 8192,
     };
 
-    const response = await fetch(url, {
+    const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -148,47 +188,26 @@ async function callQwen(apiKey, imageFile, modelId, onStatus) {
     }
 
     const data = await response.json();
-    const text = data.choices?.[0]?.message?.content;
-    if (!text) {
-        throw new Error('No text response from Qwen API');
-    }
-
-    return text;
+    return data.choices?.[0]?.message?.content || '';
 }
 
-// ─── Gemini API ─────────────────────────────────────────────
-
-async function callGemini(apiKey, imageFile, modelId, onStatus) {
-    onStatus('Converting image...');
-    const dataUrl = await fileToBase64(imageFile);
-    const base64Data = dataUrl.split(',')[1];
-    const mimeType = imageFile.type || 'image/png';
-
-    onStatus(`Sending to ${modelId}...`);
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+async function callGemini(apiKey, imageDataUrl, systemPrompt, userText, modelId) {
+    const base64Data = imageDataUrl.split(',')[1];
+    const mimeMatch = imageDataUrl.match(/data:([^;]+);/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
 
     const body = {
-        contents: [
-            {
-                parts: [
-                    { text: SYSTEM_PROMPT },
-                    {
-                        inline_data: {
-                            mime_type: mimeType,
-                            data: base64Data,
-                        },
-                    },
-                    { text: 'Analyze this floor plan and output SPP ParticleCell JSON. Return ONLY the JSON object, no other text.' },
-                ],
-            },
-        ],
-        generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 4096,
-        },
+        contents: [{
+            parts: [
+                { text: systemPrompt },
+                { inline_data: { mime_type: mimeType, data: base64Data } },
+                { text: userText },
+            ],
+        }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 8192 },
     };
 
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
     const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -201,36 +220,67 @@ async function callGemini(apiKey, imageFile, modelId, onStatus) {
     }
 
     const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) {
-        throw new Error('No text response from Gemini API');
-    }
-
-    return text;
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
-// ─── Public API ─────────────────────────────────────────────
+async function callModel(apiKey, imageDataUrl, systemPrompt, userText, modelDef) {
+    if (modelDef.provider === 'qwen') {
+        return callQwen(apiKey, imageDataUrl, systemPrompt, userText, modelDef.model);
+    } else if (modelDef.provider === 'gemini') {
+        return callGemini(apiKey, imageDataUrl, systemPrompt, userText, modelDef.model);
+    }
+    throw new Error(`Unknown provider: ${modelDef.provider}`);
+}
+
+// ─── Public API: Two-Step Analysis ──────────────────────────
 
 /**
- * @param {string} apiKey
- * @param {File} imageFile
- * @param {string} modelKey - key from MODELS
- * @param {function} onStatus
- * @returns {string} Raw text response
+ * Step 1: Detect crop bounds + fine-grained grid + room layout
  */
-export async function analyzeFloorPlan(apiKey, imageFile, modelKey, onStatus = () => { }) {
+export async function analyzeGridSize(apiKey, imageDataUrl, modelKey, onStatus) {
     const modelDef = MODELS[modelKey];
     if (!modelDef) throw new Error(`Unknown model: ${modelKey}`);
 
-    let text;
-    if (modelDef.provider === 'qwen') {
-        text = await callQwen(apiKey, imageFile, modelDef.model, onStatus);
-    } else if (modelDef.provider === 'gemini') {
-        text = await callGemini(apiKey, imageFile, modelDef.model, onStatus);
-    } else {
-        throw new Error(`Unknown provider: ${modelDef.provider}`);
-    }
+    onStatus('Step 1/2: Detecting floor plan bounds & analyzing grid layout...');
+    const text = await callModel(apiKey, imageDataUrl, STEP1_PROMPT,
+        'Analyze this floor plan. First detect the floor plan bounds (crop), then output a fine-grained grid within those bounds. Return ONLY the JSON.', modelDef);
+    return text;
+}
+
+/**
+ * Step 2: Classify each cell's faces
+ */
+export async function classifyFaces(apiKey, imageDataUrl, modelKey, gridInfo, onStatus) {
+    const modelDef = MODELS[modelKey];
+    if (!modelDef) throw new Error(`Unknown model: ${modelKey}`);
+
+    const layoutStr = gridInfo.layout
+        .map((row, z) => `  Row ${z}: ${row.map(c => c || '(exterior)').join(' | ')}`)
+        .join('\n');
+
+    const prompt = STEP2_PROMPT
+        .replace(/__GRID_X__/g, String(gridInfo.gridX))
+        .replace(/__GRID_Z__/g, String(gridInfo.gridZ))
+        .replace('__LAYOUT__', layoutStr);
+
+    onStatus(`Step 2/2: Classifying ${gridInfo.gridX}×${gridInfo.gridZ} grid faces...`);
+    const text = await callModel(apiKey, imageDataUrl, prompt,
+        `Classify each cell's face connections. Same-room cells must use open(0) between them. Return ONLY the JSON.`, modelDef);
+    return text;
+}
+
+// ─── Convenience: Full two-step analysis ────────────────────
+
+export async function analyzeFloorPlan(apiKey, imageFile, modelKey, onStatus = () => { }) {
+    const imageDataUrl = await fileToBase64(imageFile);
+
+    const step1Text = await analyzeGridSize(apiKey, imageDataUrl, modelKey, onStatus);
+    const gridInfo = JSON.parse(step1Text.replace(/```json?\n?/g, '').replace(/```/g, '').trim());
+
+    onStatus(`Grid: ${gridInfo.gridX}×${gridInfo.gridZ} — starting face classification...`);
+
+    const step2Text = await classifyFaces(apiKey, imageDataUrl, modelKey, gridInfo, onStatus);
 
     onStatus('Parsing response...');
-    return text;
+    return { step1: gridInfo, step2Text };
 }

@@ -166,11 +166,25 @@
             background: var(--accent-light);
         }
 
-        .upload-area img {
+        .image-wrapper {
+            position: relative;
+            display: inline-block;
+        }
+
+        .image-wrapper img {
             max-width: 100%;
             max-height: 200px;
             border-radius: 6px;
             object-fit: contain;
+            display: block;
+        }
+
+        .image-wrapper canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+            border-radius: 6px;
         }
 
         .upload-placeholder {
@@ -334,6 +348,58 @@
             margin-right: 6px;
             vertical-align: middle;
         }
+
+        /* ─── Grid Density Controls ────────────── */
+        .grid-density-bar {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 0;
+        }
+
+        .grid-density-bar.visible {
+            display: flex;
+        }
+
+        .grid-density-bar .label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            white-space: nowrap;
+        }
+
+        .grid-density-bar .size-display {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text);
+            min-width: 50px;
+            text-align: center;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+        }
+
+        .grid-density-bar button {
+            width: 28px;
+            height: 28px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #fafafe;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text);
+            transition: all 0.15s;
+        }
+
+        .grid-density-bar button:hover {
+            background: var(--accent-light);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 </head>
@@ -369,9 +435,23 @@
                         <div>Click or drag to upload</div>
                         <div style="font-size:11px; margin-top:4px; color:#aaa">PNG, JPG, WebP</div>
                     </div>
-                    <img id="imagePreview" style="display:none" alt="Floor plan preview">
+                    <div class="image-wrapper" id="imageWrapper" style="display:none">
+                        <img id="imagePreview" alt="Floor plan preview">
+                        <canvas id="gridOverlayCanvas"></canvas>
+                    </div>
                     <input type="file" id="fileInput" accept="image/*">
                 </div>
+            </div>
+
+            <div class="grid-density-bar" id="gridDensityBar">
+                <span class="label">Grid</span>
+                <button id="gridXMinus" title="Decrease columns">−</button>
+                <span class="size-display" id="gridXDisplay">10</span>
+                <button id="gridXPlus" title="Increase columns">+</button>
+                <span style="color:var(--text-muted);font-size:13px;font-weight:700">×</span>
+                <button id="gridZMinus" title="Decrease rows">−</button>
+                <span class="size-display" id="gridZDisplay">8</span>
+                <button id="gridZPlus" title="Increase rows">+</button>
             </div>
 
             <button id="analyzeBtn" class="btn btn-primary" disabled>
@@ -402,6 +482,9 @@
         <div class="panel-right">
             <canvas id="canvas3d"></canvas>
             <div class="viewport-badge">SPP 3D Viewport — Orbit: drag · Zoom: scroll</div>
+            <button id="topDownBtn"
+                style="position:absolute;top:12px;right:16px;padding:6px 14px;font-size:13px;border:1px solid #bbc;border-radius:6px;background:#fff;cursor:pointer;z-index:5;opacity:0.85;">⬇
+                Top View</button>
         </div>
     </div>
 

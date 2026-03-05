@@ -75,3 +75,47 @@ export function cycleOption(cell, faceIndex) {
     const next = ALL_IDS[(idx + 1) % ALL_IDS.length];
     cell.faceOptions[faceIndex] = [next];
 }
+
+/**
+ * Expand cells with scale > 1 into flat sub-cell array.
+ * Non-scaled cells pass through unchanged.
+ * Scaled cells produce n×n sub-cells with fractional positions.
+ *
+ * @param {Array} cells - array of cell objects (some may have .scale and .subCells)
+ * @returns {Array} flat array of cells (all scale=1 effective)
+ */
+export function expandScaledCells(cells) {
+    const result = [];
+
+    for (const cell of cells) {
+        const n = cell.scale || 1;
+        if (n <= 1 || !cell.subCells) {
+            // Normal cell — pass through
+            result.push(cell);
+            continue;
+        }
+
+        // Expand: parent at [px, 0, pz] with scale=n
+        // Sub-cell [sx, sz] gets position [px + (sx - (n-1)/2) / n * ... ]
+        // We use fractional positions: sub [sx,sz] → [px - 0.5 + (sx+0.5)/n, 0, pz - 0.5 + (sz+0.5)/n]
+        // This places sub-cells within the parent's footprint
+        const [px, py, pz] = cell.position;
+
+        for (const sc of cell.subCells) {
+            const [sx, sz] = sc.sub;
+            const fracX = px - 0.5 + (sx + 0.5) / n;
+            const fracZ = pz - 0.5 + (sz + 0.5) / n;
+
+            result.push({
+                position: [fracX, py, fracZ],
+                room: sc.room,
+                faceOptions: sc.faceOptions,
+                _parentScale: n,        // renderer uses this for sizing
+                _parentPos: [px, pz],   // for debugging
+                _subPos: [sx, sz],
+            });
+        }
+    }
+
+    return result;
+}
