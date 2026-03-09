@@ -119,3 +119,142 @@ export function expandScaledCells(cells) {
 
     return result;
 }
+
+/**
+ * Generate cells and face options from a 2D layout array and a list of doors.
+ * @param {Array<Array<string|null>>} layout - 2D layout grid (z, x)
+ * @param {number} gridX - Width of grid
+ * @param {number} gridZ - Height of grid
+ * @param {Array<Object>} doors - List of door objects {x1, z1, x2, z2}
+ * @returns {Array<Object>} List of cell objects
+ */
+export function generateCellsFromLayout(layout, gridX, gridZ, doors) {
+    const doorSet = new Set();
+    for (const d of doors || []) {
+        doorSet.add(`${d.x1},${d.z1}->${d.x2},${d.z2}`);
+        doorSet.add(`${d.x2},${d.z2}->${d.x1},${d.z1}`);
+    }
+    function hasDoor(x1, z1, x2, z2) {
+        return doorSet.has(`${x1},${z1}->${x2},${z2}`);
+    }
+    const windowRooms = new Set(['Kitchen', 'Living Room', 'Bedroom']);
+    function faceValue(x, z, nx, nz) {
+        const room = layout[z]?.[x];
+        const neighbor = layout[nz]?.[nx];
+        if (nx < 0 || nx >= gridX || nz < 0 || nz >= gridZ || !neighbor) {
+            return windowRooms.has(room) ? [20] : [10];
+        }
+        if (room === neighbor) return [0];
+        if (hasDoor(x, z, nx, nz)) return [2];
+        return [10];
+    }
+    const cells = [];
+    for (let z = 0; z < gridZ; z++) {
+        for (let x = 0; x < gridX; x++) {
+            const room = layout[z]?.[x];
+            if (!room) continue;
+            cells.push({
+                position: [x, 0, z],
+                room,
+                faceOptions: [
+                    faceValue(x, z, x + 1, z),  // +X
+                    faceValue(x, z, x - 1, z),  // -X
+                    [],                           // +Y
+                    [],                           // -Y
+                    faceValue(x, z, x, z - 1),  // +Z (top of image)
+                    faceValue(x, z, x, z + 1),  // -Z (bottom of image)
+                ],
+            });
+        }
+    }
+    return cells;
+}
+
+/**
+ * Data restructuring layer for multi-resolution grid optimization.
+ * Expands a low-res base layout into a high-res fine layout, applies localized
+ * fine-grained room overrides, scales doors, and recalculates all face options.
+ * 
+ * @param {Array<Array<string|null>>} baseLayout - The original low-res layout
+ * @param {number} scale - Expansion factor (e.g., 2)
+ * @param {Array<Object>} cellModifications - Fine-grained room overrides
+ *        Format: [{ basePos: [bx, bz], subPos: [sx, sz], room: 'Room Name' }]
+ * @param {Array<Object>} baseDoors - Door definitions at base scale
+ * @returns {Object} { fineLayout, cells, gridX, gridZ }
+ */
+export function optimizeGrid(baseLayout, scale, cellModifications, baseDoors) {
+    if (scale <= 1) {
+        const gridX = baseLayout[0]?.length || 0;
+        const gridZ = baseLayout.length;
+        const cells = generateCellsFromLayout(baseLayout, gridX, gridZ, baseDoors);
+        return { fineLayout: baseLayout, cells, gridX, gridZ };
+    }
+
+    const baseZ = baseLayout.length;
+    const baseX = baseLayout[0]?.length || 0;
+    const fineZ = baseZ * scale;
+    const fineX = baseX * scale;
+
+    // 1. Expand base layout into fine layout
+    const fineLayout = [];
+    for (let fz = 0; fz < fineZ; fz++) {
+        const row = [];
+        for (let fx = 0; fx < fineX; fx++) {
+            const bx = Math.floor(fx / scale);
+            const bz = Math.floor(fz / scale);
+            row.push(baseLayout[bz]?.[bx] || null);
+        }
+        fineLayout.push(row);
+    }
+
+    // 2. Apply localized room modifications (sub-cell overrides)
+    for (const mod of cellModifications || []) {
+        const [bx, bz] = mod.basePos;
+        const [sx, sz] = mod.subPos;
+        const fx = bx * scale + sx;
+        const fz = bz * scale + sz;
+        if (fineLayout[fz] && fineLayout[fz][fx] !== undefined) {
+            fineLayout[fz][fx] = mod.room;
+        }
+    }
+
+    // 3. Scale up door coordinates
+    // A base door spans 1 base cell edge. In fine grid, it spans `scale` fine cell edges.
+    const fineDoors = [];
+    for (const d of baseDoors || []) {
+        // Find which axis the door aligns with
+        if (d.x1 === d.x2) {
+            // Door on X axis (Z changes)
+            // e.g., (3,2) -> (4,2). The boundary is between X=3 and X=4.
+            // In fine grid (scale=2), boundary is between X=6..7 and X=8..9.
+            // Wait, looking at main.js mock: base (3,2)->(4,2) became (7,4)->(8,4) and (7,5)->(8,5)
+            // Base boundary is at max(x1,x2). Here x1=3, x2=4.
+            const minX = Math.min(d.x1, d.x2) * scale + (scale - 1); // e.g. 3*2+1 = 7
+            const maxX = Math.max(d.x1, d.x2) * scale;             // e.g. 4*2 = 8
+            const minZ = Math.min(d.z1, d.z2) * scale;
+            for (let sz = 0; sz < scale; sz++) {
+                fineDoors.push({ x1: minX, z1: minZ + sz, x2: maxX, z2: minZ + sz });
+            }
+        } else if (d.z1 === d.z2) {
+            // Door on Z axis
+            const minZ = Math.min(d.z1, d.z2) * scale + (scale - 1);
+            const maxZ = Math.max(d.z1, d.z2) * scale;
+            const minX = Math.min(d.x1, d.x2) * scale;
+            for (let sx = 0; sx < scale; sx++) {
+                fineDoors.push({ x1: minX + sx, z1: minZ, x2: minX + sx, z2: maxZ });
+            }
+        }
+    }
+
+    // 4. Generate cells using the uniform fine grid
+    const cells = generateCellsFromLayout(fineLayout, fineX, fineZ, fineDoors);
+
+    // 5. Mark cells so renderer sizes and spaces them correctly
+    for (const cell of cells) {
+        cell._parentScale = scale;
+        cell._isFineGrid = true;
+    }
+
+    return { fineLayout, cells, gridX: fineX, gridZ: fineZ };
+}
+

@@ -77,8 +77,11 @@ function renderOneCell(cell, cellSize, allKeys, keyFn) {
     const key = keyFn(pos);
     const half = cellSize / 2;
 
+    const isFineGrid = cell._isFineGrid;
+    const spacing = isFineGrid ? cellSize : CELL_SIZE;
+
     const group = new THREE.Group();
-    group.position.set(pos[0] * CELL_SIZE, 0, pos[2] * CELL_SIZE);
+    group.position.set(pos[0] * spacing, 0, pos[2] * spacing);
 
     // Floor
     const floorGeo = new THREE.PlaneGeometry(cellSize * 0.96, cellSize * 0.96);
@@ -102,8 +105,12 @@ function renderOneCell(cell, cellSize, allKeys, keyFn) {
 
         // Skip duplicate walls: only render for the "lower-index" side
         const [dx, , dz] = FACE_DIRECTION[fi];
-        // For sub-cells, step is 1/n; for normal cells, step is 1
-        const step = cell._parentScale ? (1 / cell._parentScale) : 1;
+
+        // Neighbor calculation depends on whether the cell came from `expandScaledCells`
+        // (fractional positions: step = 1/n) or `optimizeGrid` (integer positions: step = 1).
+        const isFractionalSubCell = cell._parentScale && !cell._isFineGrid;
+        const step = isFractionalSubCell ? (1 / cell._parentScale) : 1;
+
         const nx = pos[0] + dx * step;
         const nz = pos[2] + dz * step;
         const neighborKey = keyFn([nx, 0, nz]);

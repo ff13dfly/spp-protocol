@@ -8,7 +8,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { analyzeGridSize, classifyFaces, MODELS, DEFAULT_MODEL } from './prompt.js';
 import { parseAIResponse } from './parser.js';
 import { renderCells, rebuildCellWalls, CELL_SIZE } from './renderer-3d.js';
-import { FACE_NAMES, OPTION_REGISTRY, ALL_IDS, cycleOption, getResolvedOption, expandScaledCells } from './particle.js';
+import { FACE_NAMES, OPTION_REGISTRY, ALL_IDS, cycleOption, getResolvedOption, expandScaledCells, optimizeGrid, generateCellsFromLayout } from './particle.js';
 import { drawGridOverlay } from './grid-overlay.js';
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -424,123 +424,68 @@ function showDensityBar(gridX, gridZ, layout, crop) {
     gridDensityBar.classList.add('visible');
 }
 
-// ─── Helper: Generate cells from layout ─────────────────────
-
-function generateCellsFromLayout(layout, gridX, gridZ, doors) {
-    const doorSet = new Set();
-    for (const d of doors) {
-        doorSet.add(`${d.x1},${d.z1}->${d.x2},${d.z2}`);
-        doorSet.add(`${d.x2},${d.z2}->${d.x1},${d.z1}`);
-    }
-    function hasDoor(x1, z1, x2, z2) {
-        return doorSet.has(`${x1},${z1}->${x2},${z2}`);
-    }
-    const windowRooms = new Set(['Kitchen', 'Living Room', 'Bedroom']);
-    function faceValue(x, z, nx, nz) {
-        const room = layout[z]?.[x];
-        const neighbor = layout[nz]?.[nx];
-        if (nx < 0 || nx >= gridX || nz < 0 || nz >= gridZ || !neighbor) {
-            return windowRooms.has(room) ? [20] : [10];
-        }
-        if (room === neighbor) return [0];
-        if (hasDoor(x, z, nx, nz)) return [2];
-        return [10];
-    }
-    const cells = [];
-    for (let z = 0; z < gridZ; z++) {
-        for (let x = 0; x < gridX; x++) {
-            const room = layout[z]?.[x];
-            if (!room) continue;
-            cells.push({
-                position: [x, 0, z],
-                room,
-                faceOptions: [
-                    faceValue(x, z, x + 1, z),  // +X
-                    faceValue(x, z, x - 1, z),  // -X
-                    [],                           // +Y
-                    [],                           // -Y
-                    faceValue(x, z, x, z - 1),  // +Z (top of image)
-                    faceValue(x, z, x, z + 1),  // -Z (bottom of image)
-                ],
-            });
-        }
-    }
-    return cells;
-}
-
 // ─── Mock Data ──────────────────────────────────────────────
 
 if (new URLSearchParams(location.search).has('mock')) {
 
-
-
-    // ══════════════════════════════════════════════════════════
-    // Fine-Grid Multi-Resolution (simulated)
-    // ══════════════════════════════════════════════════════════
-    //
-    // Base 11×9 grid expanded to uniform 22×18 (scale=2).
-    // Boundary half-rows get room overrides to place walls at
-    // half-cell precision. All cells same size = no neighbor issues.
-    //
+    const K = 'Kitchen', H = 'Hallway', B = 'Bathroom', BR = 'Bedroom', LR = 'Living Room';
     const mockCrop = { x: 0.075, y: 0.112, w: 0.85, h: 0.81 };
 
+    // AI Step 1: Base low-res layout
     const baseLayout = [
         [K, K, K, K, H, H, B, B, B, B, B],
         [K, K, K, K, H, H, B, B, B, B, B],
         [K, K, K, K, H, H, B, B, B, B, B],
-        [K, K, K, K, H, H, BR, BR, BR, BR, BR],
-        [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
+        [K, K, K, K, H, H, BR, BR, BR, BR, BR], // Bath/BR boundary
+        [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR], // Kitchen/LR boundary (base row 3/4)
         [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
         [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
         [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
         [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
     ];
 
-    const SCALE = 2;
-    const fineX = 11 * SCALE;
-    const fineZ = 9 * SCALE;
+    const baseDoors = [
+        { x1: 3, z1: 2, x2: 4, z2: 2 },  // Kitchen ↔ Hallway
+        { x1: 5, z1: 2, x2: 6, z2: 2 },  // Bathroom ↔ Hallway
+        { x1: 3, z1: 6, x2: 4, z2: 6 },  // Living Room ↔ Hallway
+        { x1: 5, z1: 6, x2: 6, z2: 6 },  // Bedroom ↔ Hallway
+    ];
 
-    // Expand base → fine
-    const fineLayout = [];
-    for (let fz = 0; fz < fineZ; fz++) {
-        const row = [];
-        for (let fx = 0; fx < fineX; fx++) {
-            row.push(baseLayout[Math.floor(fz / SCALE)]?.[Math.floor(fx / SCALE)] || null);
-        }
-        fineLayout.push(row);
+    // AI Step 3 (Iterative Refinement): Localized high-res overrides
+    const cellModifications = [];
+
+    // Kitchen/LR boundary optimization
+    // Base row 3 (cols 0-3) is Kitchen, but the wall should be exactly at the bottom half
+    // of the sub-cells. i.e., in fine grid, the bottom sub-cells of row 3 should be LR.
+    for (let bx = 0; bx <= 3; bx++) {
+        cellModifications.push({ basePos: [bx, 3], subPos: [0, 1], room: LR }); // left side of cell
+        cellModifications.push({ basePos: [bx, 3], subPos: [1, 1], room: LR }); // right side of cell
     }
 
-    // Override boundary half-rows:
-    // Kitchen/LR: base row 3 bottom → fine row 7, cols 0-7 → LR
-    for (let fx = 0; fx < 8; fx++) fineLayout[7][fx] = LR;
-    // Bath/BR: base row 2 bottom → fine row 5, cols 12-21 → BR
-    for (let fx = 12; fx < 22; fx++) fineLayout[5][fx] = BR;
+    // Bath/BR boundary optimization
+    // Base row 2 (cols 6-10) is Bathroom, but the top half of those sub-cells should stay Bathroom,
+    // and the bottom half should be Bedroom. Wait, earlier mock said: base row 2 bottom -> BR
+    for (let bx = 6; bx <= 10; bx++) {
+        cellModifications.push({ basePos: [bx, 2], subPos: [0, 1], room: BR });
+        cellModifications.push({ basePos: [bx, 2], subPos: [1, 1], room: BR });
+    }
 
-    // Fine-grid doors (base door spans 2 fine cells)
-    const fineDoors = [
-        { x1: 7, z1: 4, x2: 8, z2: 4 }, { x1: 7, z1: 5, x2: 8, z2: 5 },
-        { x1: 11, z1: 4, x2: 12, z2: 4 }, { x1: 11, z1: 5, x2: 12, z2: 5 },
-        { x1: 7, z1: 12, x2: 8, z2: 12 }, { x1: 7, z1: 13, x2: 8, z2: 13 },
-        { x1: 11, z1: 12, x2: 12, z2: 12 }, { x1: 11, z1: 13, x2: 12, z2: 13 },
-    ];
+    // Process via the Data Restructuring Layer
+    const SCALE = 2;
+    const { fineLayout, cells: fineCells, gridX: fineX, gridZ: fineZ } = optimizeGrid(baseLayout, SCALE, cellModifications, baseDoors);
 
-    const fineCells = generateCellsFromLayout(fineLayout, fineX, fineZ, fineDoors);
-
-    // Entrance doors
+    // Entrance doors (Hardcoded for mock top-level)
     for (const cell of fineCells) {
         const [x, , z] = cell.position;
         if (x >= 8 && x <= 11 && z <= 1) cell.faceOptions[4] = [2];
     }
-
-    // All cells render at CELL_SIZE/SCALE
-    for (const cell of fineCells) cell._parentScale = SCALE;
 
     const mockStep1 = { crop: mockCrop, gridX: 11, gridZ: 9, layout: baseLayout };
 
     const mockResult = {
         gridX: fineX, gridZ: fineZ,
         layout: fineLayout,
-        description: 'Fine 22×18 grid (scale=2): walls at half-cell precision',
+        description: 'Fine 22×18 grid generated via optimizeGrid (scale=2), applying local room boundary corrections.',
         cells: fineCells,
     };
 
@@ -550,6 +495,7 @@ if (new URLSearchParams(location.search).has('mock')) {
 
     const topDownBtn = document.getElementById('topDownBtn');
     if (topDownBtn) {
+        // ... (Listener remains mostly unchanged)
         topDownBtn.addEventListener('click', () => {
             isTopDown = !isTopDown;
             if (isTopDown) {
@@ -579,7 +525,7 @@ if (new URLSearchParams(location.search).has('mock')) {
         const fullOutput = { step1_gridSizing: mockStep1, step2_faceClassification: mockResult };
         jsonOutput.textContent = JSON.stringify(fullOutput, null, 2);
         descriptionText.textContent = mockResult.description;
-        setStatus(`Mock (fine-grid): ${fineCells.length} cells in ${fineX}×${fineZ}`, 'success');
+        setStatus(`Mock (optimizeGrid): ${fineCells.length} cells in ${fineX}×${fineZ}`, 'success');
         editInfo.style.display = 'block';
         document.getElementById('exportBtn').disabled = false;
     }, 300);
