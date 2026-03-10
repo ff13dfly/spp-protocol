@@ -1,11 +1,29 @@
-想实现这么一个演示“弦粒子”的demo
-1. 支持mobile和pc，3D使用three.js
-2. 开始的时候，只显示一个box，box的各个面，就切换不同的可选项
-3. 联通的方式有，纯空、拱形门、方形门框等；阻挡的方式有，砖墙、土墙、半高墙、绿色植物墙等
-4. 双击box之后，用算法展开，生成一个30～50个cell构成迷宫
-5. 然后，“弦粒子”塌陷成对应的空间，即生成了一个迷宫
-6. 可以从各个角度来浏览迷宫，说明其是纯3D的空间
-7. 双击迷宫，收缩回一个“弦粒子”，再双击，生成另外一个迷宫
-写一个实施方案，放到spp-examples里
+# SPP Examples
 
-再增加个demo，这么来展示
+A collection of interactive demonstrations of the **String Particle Protocol (SPP)**.
+
+## Available Examples
+
+| Demo | Type | Description |
+|---|---|---|
+| [**Maze Demo**](./maze-demo/) | Forward | Demonstrates superposition, cascade collapse, and algorithmic maze generation. |
+| [**Inverse Demo**](./inverse-demo/) | Inverse | Demonstrates 3D reconstruction from 2D floor plans using the AI inverse modeling engine. |
+
+---
+
+## Shared Foundation
+
+All examples are built on the shared library located in the root [`spp-lib/`](../spp-lib/) directory:
+- **`spp-core.js`**: Pure SPP data model (Face constants, Option registry).
+- **`spp-inverse-engine.js`**: AI-driven reconstruction pipeline used by the Inverse Demo.
+
+## Running the Examples
+
+All examples are browser-based. To run them locally:
+
+1. Open the project root in a terminal.
+2. Start a simple HTTP server:
+   ```bash
+   npx serve .
+   ```
+3. Open the provided link (usually `http://localhost:3000`) and navigate into the `spp-examples/` directory.

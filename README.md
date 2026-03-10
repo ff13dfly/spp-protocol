@@ -23,6 +23,7 @@ SPP is designed to:
 
 ```
 ├─ specs/          ← Protocol specifications
+├─ spp-lib/        ← Shared library (Core model & Inverse engine)
 ├─ spp-examples/   ← Example worlds
 ├─ spp-reference/  ← Reference implementations
 └─ spp-tools/      ← Toolchain
