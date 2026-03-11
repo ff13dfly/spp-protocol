@@ -119,7 +119,7 @@ async function callGemini(apiKey, imageDataUrl, systemPrompt, userText, modelId)
     return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
-async function callModel(apiKey, imageDataUrl, systemPrompt, userText, modelDef) {
+export async function callModel(apiKey, imageDataUrl, systemPrompt, userText, modelDef) {
     if (modelDef.provider === 'qwen') {
         return callQwen(apiKey, imageDataUrl, systemPrompt, userText, modelDef.model);
     } else if (modelDef.provider === 'gemini') {

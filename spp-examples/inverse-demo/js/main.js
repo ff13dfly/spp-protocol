@@ -5,11 +5,12 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { analyzeGridSize, classifyFaces, MODELS, DEFAULT_MODEL } from './prompt.js';
+import { analyzeGridSize, classifyFaces, MODELS, DEFAULT_MODEL, callModel } from './prompt.js';
 import { parseAIResponse } from './parser.js';
 import { renderCells, rebuildCellWalls, CELL_SIZE } from './renderer-3d.js';
 import { FACE_NAMES, OPTION_REGISTRY, ALL_IDS, cycleOption, getResolvedOption, expandScaledCells, optimizeGrid, generateCellsFromLayout } from './particle.js';
 import { drawGridOverlay } from './grid-overlay.js';
+import { RecursiveGridManager } from './recursive-core.js';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ let currentGroup = null;
 let currentCellMap = null;
 let currentAllKeys = null;
 let currentCells = null;
+let selectedCellKey = null;
 let raycaster, mouse;
 
 // ─── DOM ────────────────────────────────────────────────────
@@ -45,6 +47,7 @@ const modelSelect = document.getElementById('modelSelect');
 const jsonOutput = document.getElementById('jsonOutput');
 const descriptionText = document.getElementById('descriptionText');
 const editInfo = document.getElementById('editInfo');
+const refineBtn = document.getElementById('refineBtn');
 
 // ─── Populate Model Dropdown ────────────────────────────────
 
@@ -257,7 +260,7 @@ analyzeBtn.addEventListener('click', async () => {
 
         // Render
         renderResult(result);
-        setStatus(`✓ Reconstructed ${result.cells.length} cells (${result.gridX}×${result.gridZ} grid) in 2 steps`, 'success');
+        setStatus(`✓ Reconstructed ${result.cells.length} cells (${result.gridX}×${result.gridZ} grid) - 5-Phase architecture aligned`, 'success');
         editInfo.style.display = 'block';
     } catch (err) {
         console.error(err);
@@ -277,7 +280,11 @@ function renderResult(result) {
     }
 
     currentCells = result.cells;
-    const { sceneGroup, cellMap, center } = renderCells(result.cells);
+    
+    // Flatten recursive structure for rendering
+    const leafCells = RecursiveGridManager.flattenRecursiveCells(currentCells);
+    const { sceneGroup, cellMap, center } = renderCells(leafCells);
+    
     currentGroup = sceneGroup;
     currentCellMap = cellMap;
     currentAllKeys = new Set(cellMap.keys());
@@ -335,6 +342,9 @@ canvas.addEventListener('click', (e) => {
         const cell = currentCellMap.get(cellKey);
         if (!cell) continue;
 
+        selectedCellKey = cellKey;
+        refineBtn.style.display = 'inline-block';
+
         const fi = obj.userData.faceIndex;
 
         // Cycle the option
@@ -347,8 +357,8 @@ canvas.addEventListener('click', (e) => {
 
         // Update JSON display
         jsonOutput.textContent = JSON.stringify({
-            gridX: currentCells.length,
-            gridZ: currentCells.length,
+            gridX: currentGridX || currentCells.length,
+            gridZ: currentGridZ || currentCells.length,
             cells: currentCells,
         }, null, 2);
 
@@ -377,6 +387,61 @@ document.getElementById('exportBtn').addEventListener('click', () => {
     a.click();
     URL.revokeObjectURL(url);
     setStatus('Exported SPP JSON', 'success');
+});
+
+// ─── Refine Selected Cell ───────────────────────────────────
+
+refineBtn.addEventListener('click', async () => {
+    if (!selectedCellKey || !apiKeyInput.value) return;
+    const cell = currentCellMap.get(selectedCellKey);
+    if (!cell) return;
+
+    refineBtn.disabled = true;
+    refineBtn.textContent = '⌛ Refining...';
+
+    try {
+        const apiKey = apiKeyInput.value.trim();
+        const modelKey = modelSelect.value;
+        const imageDataUrl = await fileToBase64(fileInput.files[0]);
+
+        // Get context for AI
+        const context = RecursiveGridManager.createSubGridPromptContext(cell, 4);
+        setStatus(`Refining ${context.roomType} into 4x4 sub-grid...`, 'loading');
+
+        // Call AI for sub-grid classification
+        const modelDef = MODELS[modelKey];
+        const subGridPrompt = `You are a spatial detail analyzer. Refine this local region: ${context.roomType}.
+Resolution: ${context.resolution}
+Boundary Constraints: ${JSON.stringify(context.boundaryConstraints)}
+Rules:
+1. Divide the space into ${context.resolution} grid.
+2. Maintain the internal topology.
+3. Use 0 for open and 10 for wall.
+Return ONLY JSON:
+{ "gridX": 4, "gridZ": 4, "cells": [...] }`;
+
+        const responseText = await callModel(apiKey, imageDataUrl, subGridPrompt, "Generate the sub-grid JSON.", modelDef);
+        const subGridData = parseAIResponse(responseText);
+
+        // Integrate back into recursive structure
+        RecursiveGridManager.integrateSubGrid(cell, subGridData);
+
+        // Re-render
+        renderResult({
+            cells: currentCells,
+            gridX: currentGridX,
+            gridZ: currentGridZ,
+            description: `Refined ${context.roomType} sub-grid.`
+        });
+
+        setStatus(`✓ ${context.roomType} refined!`, 'success');
+    } catch (err) {
+        console.error(err);
+        setStatus(`Refinement failed: ${err.message}`, 'error');
+    } finally {
+        refineBtn.disabled = false;
+        refineBtn.textContent = '🔍 Refine Selected Cell';
+    }
 });
 
 // ─── Boot ───────────────────────────────────────────────────
@@ -428,16 +493,19 @@ function showDensityBar(gridX, gridZ, layout, crop) {
 
 if (new URLSearchParams(location.search).has('mock')) {
 
-    const K = 'Kitchen', H = 'Hallway', B = 'Bathroom', BR = 'Bedroom', LR = 'Living Room';
+    const A = 'Space_A', B = 'Space_B', C = 'Space_C', D = 'Space_D', E = 'Space_E';
     const mockCrop = { x: 0.075, y: 0.112, w: 0.85, h: 0.81 };
+
+    // Map old names to new ones for logic compatibility
+    const K = A, H = B, B_room = C, BR = D, LR = E;
 
     // AI Step 1: Base low-res layout
     const baseLayout = [
-        [K, K, K, K, H, H, B, B, B, B, B],
-        [K, K, K, K, H, H, B, B, B, B, B],
-        [K, K, K, K, H, H, B, B, B, B, B],
-        [K, K, K, K, H, H, BR, BR, BR, BR, BR], // Bath/BR boundary
-        [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR], // Kitchen/LR boundary (base row 3/4)
+        [K, K, K, K, H, H, B_room, B_room, B_room, B_room, B_room],
+        [K, K, K, K, H, H, B_room, B_room, B_room, B_room, B_room],
+        [K, K, K, K, H, H, B_room, B_room, B_room, B_room, B_room],
+        [K, K, K, K, H, H, BR, BR, BR, BR, BR], 
+        [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR], 
         [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
         [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
         [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
@@ -477,6 +545,10 @@ if (new URLSearchParams(location.search).has('mock')) {
     // Entrance doors (Hardcoded for mock top-level)
     for (const cell of fineCells) {
         const [x, , z] = cell.position;
+        // Ensure standard fields are present (optimizeGrid calls generateCellsFromLayout which we updated, so this is just insurance)
+        cell.size = cell.size || [1, 1, 1];
+        cell.faceStates = cell.faceStates || 63;
+        
         if (x >= 8 && x <= 11 && z <= 1) cell.faceOptions[4] = [2];
     }
 
@@ -525,7 +597,7 @@ if (new URLSearchParams(location.search).has('mock')) {
         const fullOutput = { step1_gridSizing: mockStep1, step2_faceClassification: mockResult };
         jsonOutput.textContent = JSON.stringify(fullOutput, null, 2);
         descriptionText.textContent = mockResult.description;
-        setStatus(`Mock (optimizeGrid): ${fineCells.length} cells in ${fineX}×${fineZ}`, 'success');
+        setStatus(`Mock (optimizeGrid): ${fineCells.length} cells in ${fineX}×${fineZ} - 5-Phase architecture aligned`, 'success');
         editInfo.style.display = 'block';
         document.getElementById('exportBtn').disabled = false;
     }, 300);

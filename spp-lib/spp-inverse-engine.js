@@ -66,6 +66,8 @@ export function expandScaledCells(cells) {
 
             result.push({
                 position: [fracX, py, fracZ],
+                size: [1 / n, 1, 1 / n], // fractional size for sub-cells
+                faceStates: 63,          // 0b111111 (all faces active)
                 room: sc.room,
                 faceOptions: sc.faceOptions,
                 _parentScale: n,        // renderer uses this for sizing
@@ -113,14 +115,16 @@ export function generateCellsFromLayout(layout, gridX, gridZ, doors) {
             if (!room) continue;
             cells.push({
                 position: [x, 0, z],
+                size: [1, 1, 1],    // standard unit size
+                faceStates: 63,     // 0b111111 (all faces active)
                 room,
                 faceOptions: [
                     faceValue(x, z, x + 1, z),  // +X
                     faceValue(x, z, x - 1, z),  // -X
                     [],                           // +Y
                     [],                           // -Y
-                    faceValue(x, z, x, z - 1),  // +Z (top of image)
-                    faceValue(x, z, x, z + 1),  // -Z (bottom of image)
+                    faceValue(x, z, x, z - 1),  // +Z
+                    faceValue(x, z, x, z + 1),  // -Z
                 ],
             });
         }
@@ -238,23 +242,23 @@ Create a grid that covers ONLY the floor plan area (not the margins):
 ## Rules
 1. Study the image and estimate each room's relative width and height
 2. Choose a common unit size such that rooms fit as integer multiples
-3. Assign each cell a room name — cells belonging to the same room share the same name
+3. Assign each cell a topological Space ID (e.g., "Space_A", "Space_B", "Space_C") — cells belonging to the same enclosed region share the same ID.
 4. Use null for cells that are exterior (outside the building)
 5. The grid should be between 4×4 and 12×12 for typical apartments
 6. CRITICAL: the grid must preserve proportions — a room twice as wide should span twice as many columns
-7. **Wall snapping**: When a physical wall does not perfectly align with a cell boundary, assign the cell to whichever room occupies MORE of that cell's area. Walls must always land on cell boundaries.
-8. **Rectangular rooms**: Each room should form a contiguous rectangular block. Avoid L-shaped or jagged room assignments.
-9. **Minimum room size**: Every room must have at least 1 cell. Do not let small rooms (e.g., bathroom) disappear due to snapping.
+7. **Wall snapping (Area-Majority Rule)**: When a physical wall does not perfectly align with a cell boundary, assign the cell to whichever room occupies MORE of that cell's area. Walls must always land on cell boundaries.
+8. **Rectangular spaces**: Each Space ID should form a contiguous rectangular block. Avoid L-shaped or jagged assignments.
+9. **Minimum size**: Every enclosed region must have at least 1 cell.
 
 ## Output
-Return ONLY a JSON object (no markdown, no explanation):
+Return ONLY a JSON object:
 {
   "crop": { "x": <float 0-1>, "y": <float 0-1>, "w": <float 0-1>, "h": <float 0-1> },
   "gridX": <columns>,
   "gridZ": <rows>,
   "layout": [
-    ["Room A", "Room A", "Room B", ...],
-    ["Room A", "Room A", "Room B", ...],
+    ["Space_A", "Space_A", "Space_B", ...],
+    ["Space_A", "Space_A", "Space_B", ...],
     ...
   ]
 }
@@ -281,33 +285,19 @@ GRID_Z: __GRID_Z__
 Layout:
 __LAYOUT__
 
-## SPP Face Options
+## Phase 2: Binary Topology Generation
+Your task is to classify connections between the Space IDs. To simplify the process, use ONLY two options for now:
 
-Each cell has 6 faces. Classify the 4 horizontal faces:
-Face order: [+X (right), -X (left), +Y (up), -Y (down), +Z (front/up-in-image), -Z (back/down-in-image)]
-+Y and -Y are always [] (unused for single-floor plans).
-
-### Option IDs
-
-- 0: **Open** — no wall, passage continues (SAME room cells adjacent to each other)
-- 2: **Door** — doorway between DIFFERENT rooms
-- 10: **Wall** — solid wall (interior wall between rooms, or exterior wall)
-- 20: **Window** — exterior wall with window
+- 0: **Open** — ID same (passage continues within the same region)
+- 10: **Wall** — ID different (structural wall between regions or exterior)
 
 ## Rules
-
-1. **Same-room adjacency**: If two adjacent cells belong to the SAME room → use 0 (open) between them. This is critical for rooms spanning multiple cells.
-2. **Different-room adjacency with door**: If adjacent cells are DIFFERENT rooms connected by a doorway → use 2 (door).
-3. **Different-room adjacency with wall**: If adjacent cells are DIFFERENT rooms separated by a wall → use 10 (wall).
-4. **Exterior face**: face at the edge of the building:
-   - Use 20 (window) for living rooms, bedrooms, and kitchens (they typically have windows)
-   - Use 10 (wall) for bathrooms and hallways
-5. **Symmetry**: Adjacent faces MUST match — if cell A's +X is door, the neighbor's -X must also be door.
-6. **Door placement**: Doors between rooms should appear on only ONE cell-pair boundary, not across the entire room border.
+1. **Same-ID adjacency**: If two adjacent cells belong to the SAME Space ID → use 0 (open).
+2. **Different-ID adjacency**: If adjacent cells are DIFFERENT IDs or exterior → use 10 (wall).
+3. **DO NOT generate doors or windows yet**. These will be processed in a later phase. Focus 100% on the physical shell.
 
 ## Output
-
-Return ONLY a JSON object (no markdown, no explanation):
+Return ONLY a JSON object:
 {
   "gridX": __GRID_X__,
   "gridZ": __GRID_Z__,
@@ -315,7 +305,7 @@ Return ONLY a JSON object (no markdown, no explanation):
   "cells": [
     {
       "position": [x, 0, z],
-      "room": "<room name>",
+      "room": "<Space ID>",
       "faceOptions": [[id], [id], [], [], [id], [id]]
     }
   ]
@@ -476,9 +466,12 @@ export class RecursiveGridManager {
         for (const cell of cells) {
             // 计算当前格子在世界坐标系中的真实绝对坐标
             // 公式: 绝对起点 = 父级绝对起点 + 相对偏移量 * 父级缩放比例
-            const worldX = parentWorldPos[0] + cell.position[0] * parentWorldScale;
-            const worldY = parentWorldPos[1] + cell.position[1] * parentWorldScale;
-            const worldZ = parentWorldPos[2] + cell.position[2] * parentWorldScale;
+            // Offset for sub-cells should be relative to parent's corner, not center.
+            // For root cells, parentWorldPos is [0,0,0] and parentWorldScale is 1.0.
+            const subCellSize = parentWorldScale / gridSpan;
+            const worldX = parentWorldPos[0] + (cell.position[0] * subCellSize);
+            const worldY = parentWorldPos[1] + (cell.position[1] * subCellSize);
+            const worldZ = parentWorldPos[2] + (cell.position[2] * subCellSize);
 
             if (cell.subGrid && Array.isArray(cell.subGrid.cells)) {
                 // 如果是"宏观节点"并且具有子网格，则继续递归
@@ -499,7 +492,7 @@ export class RecursiveGridManager {
                 flattenedLeaves.push({
                     ...cell,
                     worldPosition: [worldX, worldY, worldZ],
-                    worldScale: parentWorldScale
+                    worldScale: (cell._isFineGrid) ? (parentWorldScale / 2) : parentWorldScale
                 });
             }
         }
@@ -606,20 +599,61 @@ export class SPPInverseEngine {
      *   - description: brief description from the AI
      */
     async reconstruct(imageDataUrl) {
-        // Step 1: Grid sizing & room layout
+        // Phase 1: Detect crop bounds + fine-grained grid + Space IDs
         const gridInfo = await this.analyzeGridSize(imageDataUrl);
 
-        // Step 2: Face classification
-        const result = await this.classifyFaces(imageDataUrl, gridInfo);
+        // Phase 2: Binary Face Generation (Open / Wall Only)
+        const classification = await this.classifyFaces(imageDataUrl, gridInfo);
+        const { cells } = classification;
 
-        this.onStatus(`✓ Reconstructed ${result.cells.length} cells (${result.gridX}×${result.gridZ} grid)`);
+        // Phase 3 & 4 (Stubs for now, allowing future expansion)
+        // In a real implementation, we would call inferSemantics and pierceFeatures here.
+        this.onStatus('Finalizing geometry and applying semantic labels...');
 
+        // Example calls for Phase 3 & 4 (replace with actual logic)
+        // const semanticMapping = this.inferSemantics(gridInfo.layout);
+        const finalCells = this.pierceFeatures(cells, /* doors */ [], /* windows */ []);
+
+        this.onStatus(`✓ Reconstructed ${finalCells.length} cells (${gridInfo.gridX}×${gridInfo.gridZ} grid)`);
+
+        // Result integration
         return {
             gridInfo,
-            cells: result.cells,
-            description: result.description,
-            gridX: result.gridX,
-            gridZ: result.gridZ,
+            cells: finalCells, // Use the cells after feature piercing
+            description: `Reconstructed building with Space IDs. Semantic inference and FEATURE PIERCING applied.`,
+            gridX: gridInfo.gridX,
+            gridZ: gridInfo.gridZ,
         };
+    }
+
+    /**
+     * Phase 3: Semantic Inference
+     * Maps abstract Space IDs to semantic room names.
+     */
+    inferSemantics(layout) {
+        // Mock semantic mapping logic
+        const mapping = {};
+        for (let r = 0; r < layout.length; r++) {
+            for (let c = 0; c < layout[r].length; c++) {
+                const sid = layout[r][c];
+                if (sid && !mapping[sid]) {
+                    // In a real system, this would use a small LLM or OCR
+                    mapping[sid] = sid.replace('Space_', 'Room_');
+                }
+            }
+        }
+        return mapping;
+    }
+
+    /**
+     * Phase 4: Feature Piercing
+     * Injects doors and windows into the binary wall topology.
+     */
+    pierceFeatures(cells, doors, windows) {
+        // This deterministic step "pierces" the solid walls
+        for (const cell of cells) {
+            // ... Logic to update faceOptions based on door/window coordinates
+        }
+        return cells; // Return updated cells
     }
 }

@@ -42,7 +42,8 @@ const subFloorMat = new THREE.MeshStandardMaterial({
 function createWallMesh(optionId, size) {
     const opt = OPTION_REGISTRY[optionId];
     if (!opt || opt.type === OPTION_TYPE.OPEN) return null;
-    const geo = new THREE.BoxGeometry(size, WALL_HEIGHT, WALL_THICKNESS);
+    // Over-extend length by WALL_THICKNESS so walls meet at corners
+    const geo = new THREE.BoxGeometry(size + WALL_THICKNESS, WALL_HEIGHT, WALL_THICKNESS);
     const mesh = new THREE.Mesh(geo, wallMat);
     mesh.position.y = WALL_HEIGHT / 2;
     return mesh;
@@ -74,18 +75,26 @@ const HORIZONTAL_FACES = [FACE.POS_X, FACE.NEG_X, FACE.POS_Z, FACE.NEG_Z];
 
 function renderOneCell(cell, cellSize, allKeys, keyFn) {
     const pos = cell.position;
-    const key = keyFn(pos);
+    const key = cell.worldPosition ? keyFn(cell.worldPosition) : keyFn(pos);
     const half = cellSize / 2;
 
     const isFineGrid = cell._isFineGrid;
     const spacing = isFineGrid ? cellSize : CELL_SIZE;
 
     const group = new THREE.Group();
-    group.position.set(pos[0] * spacing, 0, pos[2] * spacing);
+    
+    // Apply world position if available.
+    // worldPosition and worldScale are relative to the unit grid (1.0 = CELL_SIZE).
+    if (cell.worldPosition) {
+        const [wx, wy, wz] = cell.worldPosition;
+        group.position.set(wx * CELL_SIZE, wy * CELL_SIZE, wz * CELL_SIZE);
+    } else {
+        group.position.set(pos[0] * spacing, 0, pos[2] * spacing);
+    }
 
     // Floor
     const floorGeo = new THREE.PlaneGeometry(cellSize * 0.96, cellSize * 0.96);
-    const fMat = cell._parentScale ? subFloorMat : floorMat;
+    const fMat = (cell._parentScale || cell.worldScale < 1) ? subFloorMat : floorMat;
     const floor = new THREE.Mesh(floorGeo, fMat);
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = 0.01;
@@ -106,15 +115,19 @@ function renderOneCell(cell, cellSize, allKeys, keyFn) {
         // Skip duplicate walls: only render for the "lower-index" side
         const [dx, , dz] = FACE_DIRECTION[fi];
 
-        // Neighbor calculation depends on whether the cell came from `expandScaledCells`
-        // (fractional positions: step = 1/n) or `optimizeGrid` (integer positions: step = 1).
-        const isFractionalSubCell = cell._parentScale && !cell._isFineGrid;
-        const step = isFractionalSubCell ? (1 / cell._parentScale) : 1;
-
-        const nx = pos[0] + dx * step;
-        const nz = pos[2] + dz * step;
-        const neighborKey = keyFn([nx, 0, nz]);
-        if (allKeys.has(neighborKey) && fi > OPPOSITE_FACE[fi]) continue;
+        // For hierarchical cells, neighbor detection is harder. 
+        // For now, if it's a world-positioned cell, we don't skip duplicates 
+        // unless they share the exact same edge key.
+        if (cell.worldPosition) {
+            // Simplification: skip logic for hierarchical cells for now to ensure all walls show
+        } else {
+            const isFractionalSubCell = cell._parentScale && !cell._isFineGrid;
+            const step = isFractionalSubCell ? (1 / cell._parentScale) : 1;
+            const nx = pos[0] + dx * step;
+            const nz = pos[2] + dz * step;
+            const neighborKey = keyFn([nx, 0, nz]);
+            if (allKeys.has(neighborKey) && fi > OPPOSITE_FACE[fi]) continue;
+        }
 
         const mesh = createWallMesh(optionId, cellSize);
         if (mesh) {
@@ -161,12 +174,13 @@ export function renderCells(cells) {
 
     // Render each cell at appropriate size
     for (const cell of cells) {
-        const n = cell._parentScale || 1;
-        const cellSize = CELL_SIZE / n;
+        const worldScale = cell.worldScale || (1 / (cell._parentScale || 1));
+        const cellSize = CELL_SIZE * worldScale;
 
-        cellMap.set(keyFn(cell.position), cell);
+        const key = cell.worldPosition ? keyFn(cell.worldPosition) : keyFn(cell.position);
+        cellMap.set(key, cell);
 
-        const { group, key } = renderOneCell(cell, cellSize, allKeys, keyFn);
+        const { group } = renderOneCell(cell, cellSize, allKeys, keyFn);
         sceneGroup.add(group);
     }
 
