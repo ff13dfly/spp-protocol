@@ -5,9 +5,9 @@
 | Field       | Value                                                    |
 | ----------- | -------------------------------------------------------- |
 | Status      | Stable                                                   |
-| Version     | 1.0                                                      |
+| Version     | 1.1                                                      |
 | Author      | 傅忠强 (Zhongqiang Fu)                                    |
-| Date        | 2026-02-19                                               |
+| Date        | 2026-03-14                                               |
 | License     | CC BY-NC 4.0                                             |
 
 ---
@@ -32,6 +32,7 @@ The following terms are used throughout this specification:
 - **Superposition State**: The pre-collapse state of a String Particle in which all options coexist as possibilities.
 - **Resolved State**: The post-collapse state in which each face has been resolved to exactly one option.
 - **Chunk**: A container holding an ordered collection of String Particles.
+- **Refinement**: An optional nested `ParticleChunk` embedded within a `ParticleCell`. A refinement subdivides the interior of its parent cell into a finer grid while the parent's `faceOptions` continue to define the boundary interface. `ParticleCell` and `ParticleChunk` are mutually recursive types by design.
 
 ---
 
@@ -63,8 +64,11 @@ ParticleCell
 ├─ position    : integer3
 ├─ size        : integer3
 ├─ faceStates  : bitmask (6 bits)
-└─ faceOptions : id[6][]
+├─ faceOptions : id[6][]
+└─ refinement? : ParticleChunk        -- optional; see Section 3.2.5
 ```
+
+`ParticleCell` and `ParticleChunk` are mutually recursive: a cell MAY contain a chunk, and a chunk contains cells. This nesting MAY continue to arbitrary depth, with each level representing a finer spatial resolution than its parent.
 
 ### 3.2 Field Definitions
 
@@ -114,6 +118,24 @@ faceOptions : id[6][]
 - A non-empty list represents the **superposition** of that face: all concurrent possibilities before collapse.
 - An empty list indicates no spatial options exist for that face.
 
+#### 3.2.5 `refinement` (OPTIONAL)
+
+An optional embedded `ParticleChunk` that subdivides the interior of this cell into a finer grid.
+
+```
+refinement? : ParticleChunk
+  └─ cells : list<ParticleCell>   -- each at a finer resolution
+```
+
+- When present, `refinement` defines the **interior** of the cell. The parent cell's `faceOptions` continue to define the **boundary** — the interface this cell exposes to its neighbors.
+- The two fields are complementary and non-overlapping in semantic scope:
+  - `faceOptions` → what this cell looks like from outside (boundary)
+  - `refinement`  → what this cell contains inside (interior)
+- **Boundary consistency invariant**: the outer faces of the refinement's cells MUST be consistent with the parent's resolved `faceOptions`. Specifically, an edge of the refinement that is adjacent to an exterior face of the parent MUST carry the same connectivity (Open or Wall) as that face. The internal topology is unconstrained.
+- A cell without a `refinement` is a **leaf node** — the finest resolved unit at its depth.
+- A cell with a `refinement` is an **interior node** — its visual representation defers to the refinement's leaf nodes.
+- Implementations SHOULD define a maximum nesting depth to bound rendering and processing cost.
+
 ---
 
 ## 4. Container Structure
@@ -125,10 +147,16 @@ A `ParticleChunk` is the minimal container for grouping String Particles.
 ```
 ParticleChunk
 └─ cells : list<ParticleCell>
+              └─ ...
+              └─ refinement? : ParticleChunk   -- same type, recursive
+                    └─ cells : list<ParticleCell>
+                                  └─ ...
 ```
 
 - A chunk MUST contain zero or more `ParticleCell` entries.
+- Because `ParticleCell` MAY contain a `refinement : ParticleChunk`, the full structure forms a **recursive tree**: each node is a `ParticleChunk`, and the leaves are `ParticleCell` entries without a `refinement`.
 - The semantic scope of a chunk is implementation-defined. It MAY represent a room, a floor, a building, a city block, a dungeon zone, or any other spatial grouping.
+- At the root level, a `ParticleChunk` describes the coarsest resolution of a space. Refinements at successive depths describe progressively finer detail within the same spatial volume.
 
 ---
 
@@ -183,40 +211,49 @@ For a discussion of spatial coverage strategies (tessellation vs. sparse placeme
 
 This section is informative (non-normative).
 
-Two vertically adjacent String Particles:
+### 7.1 Basic adjacency
+
+Two horizontally adjacent String Particles:
 
 ```
 A: position = (0, 0, 0)
-B: position = (0, 0, 1)
+B: position = (1, 0, 0)
 ```
 
-Face +Z of A:
+Face +X of A and face −X of B share a boundary. After collapse selects option `2` (Rectangular Door) for both faces:
 
 ```
-faceOptions[+Z] = [10, 11]
-  where 10 → Staircase dataset
-        11 → Elevator dataset
+→ A door connects A and B.
 ```
 
-Face −Z of B:
+### 7.2 Recursive refinement
+
+A coarse cell C at depth 0 represents a room. Its boundary is resolved:
 
 ```
-faceOptions[−Z] = [10, 11]
-  where 10 → Staircase dataset
-        11 → Elevator dataset
+C: position = (2, 0, 1)
+   faceOptions[+X] = [10]   -- Wall (resolved)
+   faceOptions[−X] = [2]    -- Door (resolved)
+   faceOptions[+Z] = [10]   -- Wall (resolved)
+   faceOptions[−Z] = [10]   -- Wall (resolved)
+   refinement = ParticleChunk {
+     cells = [               -- 2×2 finer grid inside C
+       { position=(0,0,0), faceOptions=[[10],[2],[],[],[0],[10]], ... },
+       { position=(1,0,0), faceOptions=[[10],[0],[],[],[10],[10]], ... },
+       { position=(0,0,1), faceOptions=[[0],[10],[],[],[10],[0]], ... },
+       { position=(1,0,1), faceOptions=[[10],[0],[],[],[10],[0]], ... },
+     ]
+   }
 ```
 
-After collapse selects option `10` for both faces:
+Reading this structure:
 
-```
-→ A staircase connects A and B vertically.
-```
+- `faceOptions` on C defines the boundary: left face is a door, other three faces are walls.
+- `refinement` subdivides C's interior into a 2×2 grid with its own internal wall topology.
+- The left column of the refinement (positions x=0) carries the door connection on their −X face, consistent with C's resolved `faceOptions[−X] = [2]`.
+- Rendering defers entirely to the refinement's leaf cells. C itself is not drawn.
 
-After collapse selects option `11` for both faces:
-
-```
-→ An elevator connects A and B vertically.
-```
+The same structure applies at any depth: any leaf cell in the refinement MAY itself carry a further `refinement`, producing a tree of arbitrary depth.
 
 ---
 
@@ -224,16 +261,37 @@ After collapse selects option `11` for both faces:
 
 This section is informative (non-normative).
 
-A typical end-to-end flow using SPP-Core:
+### 8.1 Forward (generative)
+
+A typical end-to-end forward flow:
 
 ```
-1. AI generates a String Particle grid          (Stage 1 — this spec)
+1. AI generates a coarse ParticleChunk          (Stage 1 — this spec)
 2. Each face carries a set of spatial options    (Stage 1 — this spec)
 3. A collapse algorithm resolves each face       (Stage 2 — external)
-4. An engine unfolds the result into 3D space    (Stage 3 — external)
+4. Regions requiring detail → AI generates a    (Stage 1 — this spec,
+   refinement ParticleChunk inside the cell      applied recursively)
+5. Collapse and refine until leaf resolution     (Stage 2 — external)
+6. An engine flattens the tree and unfolds       (Stage 3 — external)
+   leaf nodes into 3D geometry
 ```
 
-For the inverse process — reconstructing SPP data from real-world observations — see [SPP-Inverse-Modeling](./SPP-Inverse-Modeling.md).
+### 8.2 Inverse (reconstructive)
+
+The recursive structure emerges naturally from the inverse pipeline:
+
+```
+Phase 1–4 (global):  observe full image → build root ParticleChunk
+Phase 5 (loop):      render top-down → compare with source
+  for each divergent region:
+    Phase 1–4 (local): observe crop → build refinement ParticleChunk
+                        attach as cell.refinement in root chunk
+  re-render → repeat until converged
+```
+
+The output is a single `ParticleChunk` whose cells MAY contain `refinement` sub-chunks to arbitrary depth. The boundary consistency invariant (Section 3.2.5) is maintained at each level by passing parent face connectivity as constraints to the local Phase 1 call.
+
+For a full description of the inverse pipeline, see [SPP-Inverse-Modeling](./SPP-Inverse-Modeling.md).
 
 ---
 

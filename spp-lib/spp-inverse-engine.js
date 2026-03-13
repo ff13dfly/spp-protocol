@@ -313,6 +313,42 @@ Return ONLY a JSON object:
 
 Only include cells where layout is NOT null.`;
 
+const STEP3_PROMPT = `You are an SPP feature detector. Given a floor plan image and an existing binary wall topology, identify all doors and windows.
+
+## Current Grid Topology
+GRID_X: __GRID_X__
+GRID_Z: __GRID_Z__
+Wall faces (faces currently classified as Wall, optionId=10):
+__WALL_FACES__
+
+## Task
+For each door or window visible in the floor plan image:
+1. Identify which cell (x, z) and which face index it is on:
+   - face 0 = +X (right edge of cell)
+   - face 1 = -X (left edge of cell)
+   - face 4 = +Z (front edge, lower row boundary)
+   - face 5 = -Z (back edge, upper row boundary)
+2. Assign the appropriate Option ID:
+   - 1: Arch Door (arched opening)
+   - 2: Rectangular Door (standard door, most common)
+   - 20: Window (glazed panel, only on exterior walls)
+
+## Rules
+- Only annotate faces that are currently Wall (optionId=10). Do not touch Open (0) faces.
+- A door between two interior cells must appear on BOTH cells' facing faces.
+  Example: door between (2,1) and (3,1) → annotate (2,1) face 0 AND (3,1) face 1.
+- Windows only appear on exterior walls (the neighboring cell is outside the building).
+- If a wall shows a door symbol but type is unclear, use 2 (Rectangular Door).
+- If no doors or windows are visible, return an empty array [].
+
+## Output
+Return ONLY a JSON array (no extra text):
+[
+  { "x": 2, "z": 1, "face": 0, "optionId": 2 },
+  { "x": 3, "z": 1, "face": 1, "optionId": 2 },
+  { "x": 0, "z": 2, "face": 1, "optionId": 20 }
+]`;
+
 // ═════════════════════════════════════════════════════════════
 // Part 3: Response Parser (from parser.js)
 // ═════════════════════════════════════════════════════════════
@@ -385,6 +421,7 @@ function validateAndNormalize(data) {
             position: [cell.position[0], 0, cell.position[2]],
             size: [1, 1, 1],
             faceStates: 0b111111,
+            room: cell.room || null,
             faceOptions: normalizedOptions,
         });
     }
@@ -460,44 +497,92 @@ export class RecursiveGridManager {
      * @param {number} parentWorldScale - 父级在世界中的尺寸缩放
      * @returns {Array} 铺平后带有 worldPosition 和 worldScale 的叶子节点（真实的物理像素/网格）
      */
-    static flattenRecursiveCells(cells, parentWorldPos = [0, 0, 0], parentWorldScale = 1.0) {
+    static flattenRecursiveCells(cells, parentWorldPos = [0, 0, 0], parentWorldScale = 1.0, depth = 0) {
         let flattenedLeaves = [];
 
         for (const cell of cells) {
-            // 计算当前格子在世界坐标系中的真实绝对坐标
-            // 公式: 绝对起点 = 父级绝对起点 + 相对偏移量 * 父级缩放比例
-            // Offset for sub-cells should be relative to parent's corner, not center.
-            // For root cells, parentWorldPos is [0,0,0] and parentWorldScale is 1.0.
-            const subCellSize = parentWorldScale / gridSpan;
-            const worldX = parentWorldPos[0] + (cell.position[0] * subCellSize);
-            const worldY = parentWorldPos[1] + (cell.position[1] * subCellSize);
-            const worldZ = parentWorldPos[2] + (cell.position[2] * subCellSize);
-
             if (cell.subGrid && Array.isArray(cell.subGrid.cells)) {
-                // 如果是"宏观节点"并且具有子网格，则继续递归
-                // 继续下钻的缩放等于：父级缩放 / 子网格的跨度 (假定 X Z 等比例切分)
+                // 宏观节点：先算子网格跨度，再计算当前格子的世界坐标
                 const gridSpan = Math.max(cell.subGrid.gridX, cell.subGrid.gridZ);
+                const subCellSize = parentWorldScale / gridSpan;
+                const worldX = parentWorldPos[0] + (cell.position[0] * subCellSize);
+                const worldY = parentWorldPos[1] + (cell.position[1] * subCellSize);
+                const worldZ = parentWorldPos[2] + (cell.position[2] * subCellSize);
                 const currentScale = parentWorldScale / gridSpan;
 
-                // 递归深入
                 const subCellLeaves = this.flattenRecursiveCells(
                     cell.subGrid.cells,
                     [worldX, worldY, worldZ],
-                    currentScale
+                    currentScale,
+                    depth + 1
                 );
-
                 flattenedLeaves.push(...subCellLeaves);
             } else {
-                // 这个是没有子节点的"叶子节点"，那就是物理上最终的网格
+                // 叶子节点：用父级的 scale 作为单格尺寸
+                const worldX = parentWorldPos[0] + (cell.position[0] * parentWorldScale);
+                const worldY = parentWorldPos[1] + (cell.position[1] * parentWorldScale);
+                const worldZ = parentWorldPos[2] + (cell.position[2] * parentWorldScale);
                 flattenedLeaves.push({
                     ...cell,
                     worldPosition: [worldX, worldY, worldZ],
-                    worldScale: (cell._isFineGrid) ? (parentWorldScale / 2) : parentWorldScale
+                    worldScale: parentWorldScale,
+                    _depth: depth,
                 });
             }
         }
 
         return flattenedLeaves;
+    }
+
+    /**
+     * 4. 【批量细化上下文】为多选区域生成统一的 AI Prompt 上下文。
+     * 计算选中 cells 的最小外接矩形，提取边界约束（外边缘 faceOptions 不可违背）。
+     *
+     * @param {Array} selectedCells - 用户选中的 cell 数组（需含 position, room, faceOptions）
+     * @param {number} subGridSize - 目标细化精度（AI 可自行选择 2/3/4）
+     * @returns {Object} 包含 boundingBox, rooms, boundaryConstraints, instruction
+     */
+    static createBatchRefineContext(selectedCells, subGridSize = 4) {
+        const xs = selectedCells.map(c => c.position[0]);
+        const zs = selectedCells.map(c => c.position[2]);
+        const minX = Math.min(...xs), maxX = Math.max(...xs);
+        const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+
+        const selectedSet = new Set(selectedCells.map(c => `${c.position[0]},${c.position[2]}`));
+
+        // 提取外边界约束：选中区域边缘的 face，若邻格不在选中集内，则该 face 的 optionId 不可改变
+        const FACE_NEIGHBOR = [
+            [0, [1, 0]],   // +X face → 右邻
+            [1, [-1, 0]],  // -X face → 左邻
+            [4, [0, -1]],  // +Z face → 前邻（z-1）
+            [5, [0, 1]],   // -Z face → 后邻（z+1）
+        ];
+        const boundaryConstraints = [];
+        for (const cell of selectedCells) {
+            const [cx, , cz] = cell.position;
+            for (const [faceIdx, [dx, dz]] of FACE_NEIGHBOR) {
+                const nKey = `${cx + dx},${cz + dz}`;
+                if (!selectedSet.has(nKey)) {
+                    // 邻格不在选区内 → 这条边是外边界，约束其 optionId
+                    const optionId = cell.faceOptions[faceIdx]?.[0] ?? 10;
+                    boundaryConstraints.push({ x: cx, z: cz, face: faceIdx, optionId });
+                }
+            }
+        }
+
+        const rooms = [...new Set(selectedCells.map(c => c.room).filter(Boolean))];
+
+        return {
+            boundingBox: { minX, maxX, minZ, maxZ },
+            rooms,
+            resolution: `${subGridSize}x${subGridSize}`,
+            boundaryConstraints,
+            instruction:
+                `Refine the selected region (${minX},${minZ})-(${maxX},${maxZ}) ` +
+                `containing rooms: ${rooms.join(', ')}. ` +
+                `Choose a scale (2, 3, or 4) based on area complexity. ` +
+                `Do not violate boundary constraints: ${JSON.stringify(boundaryConstraints)}.`,
+        };
     }
 }
 
@@ -599,61 +684,109 @@ export class SPPInverseEngine {
      *   - description: brief description from the AI
      */
     async reconstruct(imageDataUrl) {
-        // Phase 1: Detect crop bounds + fine-grained grid + Space IDs
+        // Phase 1: Detect crop bounds + fine-grained grid + semantic room names
         const gridInfo = await this.analyzeGridSize(imageDataUrl);
 
-        // Phase 2: Binary Face Generation (Open / Wall Only)
+        // Phase 2: Binary topology (Wall / Open only — no doors/windows yet)
         const classification = await this.classifyFaces(imageDataUrl, gridInfo);
         const { cells } = classification;
 
-        // Phase 3 & 4 (Stubs for now, allowing future expansion)
-        // In a real implementation, we would call inferSemantics and pierceFeatures here.
-        this.onStatus('Finalizing geometry and applying semantic labels...');
+        // Phase 3: AI detects door & window positions from the floor plan image
+        let annotations = [];
+        try {
+            annotations = await this.detectFeatures(imageDataUrl, cells, gridInfo);
+        } catch (e) {
+            console.warn('Phase 3 feature detection failed, skipping:', e.message);
+        }
 
-        // Example calls for Phase 3 & 4 (replace with actual logic)
-        // const semanticMapping = this.inferSemantics(gridInfo.layout);
-        const finalCells = this.pierceFeatures(cells, /* doors */ [], /* windows */ []);
+        // Phase 4: Deterministic piercing — write door/window IDs into faceOptions
+        const finalCells = this.pierceFeatures(cells, annotations);
 
         this.onStatus(`✓ Reconstructed ${finalCells.length} cells (${gridInfo.gridX}×${gridInfo.gridZ} grid)`);
 
-        // Result integration
         return {
             gridInfo,
-            cells: finalCells, // Use the cells after feature piercing
-            description: `Reconstructed building with Space IDs. Semantic inference and FEATURE PIERCING applied.`,
+            cells: finalCells,
+            description: classification.description,
             gridX: gridInfo.gridX,
             gridZ: gridInfo.gridZ,
         };
     }
 
     /**
-     * Phase 3: Semantic Inference
-     * Maps abstract Space IDs to semantic room names.
+     * Phase 3: Feature Detection
+     * Third AI call — given the floor plan image and binary topology,
+     * identifies door and window positions as face-level annotations.
+     *
+     * @param {string} imageDataUrl
+     * @param {Array} cells - cells from Phase 2 (with room field)
+     * @param {Object} gridInfo - { gridX, gridZ }
+     * @returns {Array} annotations: [{ x, z, face, optionId }, ...]
      */
-    inferSemantics(layout) {
-        // Mock semantic mapping logic
-        const mapping = {};
-        for (let r = 0; r < layout.length; r++) {
-            for (let c = 0; c < layout[r].length; c++) {
-                const sid = layout[r][c];
-                if (sid && !mapping[sid]) {
-                    // In a real system, this would use a small LLM or OCR
-                    mapping[sid] = sid.replace('Space_', 'Room_');
-                }
-            }
+    async detectFeatures(imageDataUrl, cells, gridInfo) {
+        this.onStatus('Step 3/3: Detecting doors and windows...');
+
+        // Build wall-face list for the prompt
+        const wallFaces = [];
+        for (const cell of cells) {
+            const [x, , z] = cell.position;
+            cell.faceOptions.forEach((opts, face) => {
+                if (opts[0] === 10) wallFaces.push({ x, z, face });
+            });
         }
-        return mapping;
+
+        const prompt = STEP3_PROMPT
+            .replace(/__GRID_X__/g, String(gridInfo.gridX))
+            .replace(/__GRID_Z__/g, String(gridInfo.gridZ))
+            .replace('__WALL_FACES__', JSON.stringify(wallFaces));
+
+        const text = await this.llmProvider(
+            imageDataUrl,
+            prompt,
+            'Identify all doors and windows in the floor plan. Return ONLY the JSON array.'
+        );
+
+        // Parse: expect a JSON array
+        let cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+        const arrStart = cleaned.indexOf('[');
+        const arrEnd = cleaned.lastIndexOf(']');
+        if (arrStart === -1 || arrEnd === -1) {
+            console.warn('Phase 3: no JSON array found, assuming no doors/windows');
+            return [];
+        }
+        const annotations = JSON.parse(cleaned.substring(arrStart, arrEnd + 1));
+
+        this.onStatus(`Step 3 done: ${annotations.length} features detected.`);
+        return annotations;
     }
 
     /**
-     * Phase 4: Feature Piercing
-     * Injects doors and windows into the binary wall topology.
+     * Phase 4: Feature Piercing (deterministic)
+     * Writes door/window option IDs into the cells' faceOptions.
+     * Only replaces faces currently set to Wall (id=10) — never touches Open faces.
+     *
+     * @param {Array} cells - cells from Phase 2
+     * @param {Array} annotations - [{ x, z, face, optionId }, ...] from Phase 3
+     * @returns {Array} updated cells
      */
-    pierceFeatures(cells, doors, windows) {
-        // This deterministic step "pierces" the solid walls
-        for (const cell of cells) {
-            // ... Logic to update faceOptions based on door/window coordinates
+    pierceFeatures(cells, annotations) {
+        if (!annotations || annotations.length === 0) return cells;
+
+        const cellMap = new Map(
+            cells.map(c => [`${c.position[0]},${c.position[2]}`, c])
+        );
+
+        for (const ann of annotations) {
+            const cell = cellMap.get(`${ann.x},${ann.z}`);
+            if (!cell) continue;
+            if (ann.face < 0 || ann.face > 5) continue;
+            const currentId = cell.faceOptions[ann.face]?.[0];
+            // Only pierce walls — never overwrite Open connections
+            if (currentId === 10) {
+                cell.faceOptions[ann.face] = [ann.optionId];
+            }
         }
-        return cells; // Return updated cells
+
+        return cells;
     }
 }

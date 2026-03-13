@@ -57,19 +57,32 @@ Multi-view images / LiDAR scan
 └───────────┬─────────────┘
             ▼
 ┌─────────────────────────┐
-│  Step 2: Adaptive       │  Regions with structural detail are subdivided
-│  refinement             │  into smaller particles.
-│  size = [1, 1, 1]       │  AI determines: "room / corridor / stairwell"
+│  Step 2: Binary         │  For each cell face: Wall or Open only.
+│  topology               │  Establishes structural shell; no features yet.
 └───────────┬─────────────┘
             ▼
 ┌─────────────────────────┐
-│  Step 3: Face-level     │  For each face of each particle, AI selects
-│  classification         │  the best-matching Option ID from the registry.
-│  per face → one ID      │  "arch door (1) / brick wall (10) / empty (0)"
+│  Step 3: Feature        │  AI identifies doors and windows from the source
+│  piercing               │  image. Wall faces replaced with feature IDs.
 └───────────┬─────────────┘
             ▼
+┌─────────────────────────────────────────────────┐
+│  Step 4: Visual regression loop (AI-driven)     │
+│                                                 │
+│  ① Render top-down orthographic view            │
+│  ② Frontend pixel-diff: rendered vs. source     │
+│  ③ For each divergent region:                   │
+│     - Crop source image to local patch          │
+│     - Extract boundary connectivity (Open/Wall) │
+│     - AI regenerates region as unified sub-grid │
+│     - Integrate sub-grid back into structure    │
+│  ④ Re-render → repeat until converged           │
+│                                                 │
+│  User manual selection = override / fallback    │
+└───────────┬─────────────────────────────────────┘
+            ▼
    Resolved ParticleChunk
-   (editable, renderable)
+   (editable, renderable, multi-depth)
 ```
 
 ### 2.2 Step 1 — Coarse Volume Fitting
@@ -78,18 +91,79 @@ The reconstruction begins by overlaying a grid of large particles on the observe
 
 - Areas with structure receive particles.
 - Empty or irrelevant areas are left uncovered (see [SPP-Spatial-Coverage](./SPP-Spatial-Coverage.md), Section 2: Sparse Coverage).
+- Each particle is assigned a semantic room label directly (e.g. "Kitchen", "Bedroom"), not an abstract ID.
 
-### 2.3 Step 2 — Adaptive Refinement
+### 2.3 Step 2 — Binary Topology
 
-Regions where the coarse grid is insufficient are subdivided. A single `size = [10]` particle may be replaced by a 10×10×10 grid of `size = [1]` particles. Subdivision criteria may include:
+Each cell face is classified as one of two states:
 
-- Visual complexity detected in the input images.
-- Multiple distinct face types within a single large cell.
-- User-specified regions of interest.
+- `Open (0)` — same-room adjacency, passage continues.
+- `Wall (10)` — different-room adjacency or exterior boundary.
 
-This is the multi-scale mechanism described in [SPP-Spatial-Coverage](./SPP-Spatial-Coverage.md), Section 3.
+This step focuses exclusively on the structural shell. Doors and windows are intentionally excluded and handled in Step 3.
 
-### 2.4 Step 3 — Face-Level Semantic Classification
+### 2.4 Step 3 — Feature Piercing
+
+The AI receives the source image together with the list of wall faces from Step 2, and identifies all doors and windows. Wall faces are then replaced with the corresponding feature Option ID:
+
+- `1` — Arch Door
+- `2` — Rectangular Door
+- `20` — Window (exterior walls only)
+
+This step is split into two sub-steps: an AI classification call that returns `{ x, z, face, optionId }` annotations, followed by a deterministic write pass that only replaces faces currently set to Wall.
+
+### 2.5 Step 4 — Visual Regression Loop (Recursive Local Pipeline)
+
+After the initial reconstruction (Steps 1–3), the system enters a feedback loop. Step 4 is not an independent "refinement" step — it is a **controller that re-executes Steps 1–3 locally** on divergent sub-regions until the reconstruction converges.
+
+**Global first pass vs. local recursive pass:**
+
+| | Global (Steps 1–3) | Local (Step 4 triggered) |
+|--|--|--|
+| Step 1 input | Full floor plan image | Cropped patch of divergent region |
+| Step 1 constraint | None | Four-edge Open/Wall connectivity from parent grid |
+| Steps 2–3 | Same | Same, scoped to local region |
+| Output integration | Builds root grid | Replaces coarse cells in that region at next depth |
+
+**Execution loop:**
+
+1. **Render** the current ParticleChunk as a top-down orthographic image (image A).
+2. **Compare** image A pixel-by-pixel (at cell granularity) against the source image (image B). Identify divergent regions.
+3. **For each divergent region**, re-execute Steps 1–3 locally:
+   - Crop image B to the region bounding box.
+   - Extract boundary connectivity constraints (Open/Wall per edge) from the current cell data.
+   - **Local Step 1:** AI re-grids the cropped patch within the boundary constraints.
+   - **Local Step 2:** AI re-classifies binary topology for the local grid.
+   - **Local Step 3:** AI re-detects doors and windows in the local patch.
+   - Apply local Step 4 (deterministic piercing). Integrate result back into the main structure.
+4. **Re-render** and return to step 1. Stop when no region exceeds the divergence threshold or the maximum depth is reached.
+
+User-initiated selection (click or drag-box) triggers the identical local Steps 1–3 pipeline on demand, serving as a manual override when the automatic pass is insufficient.
+
+#### 2.5.1 Region-Level Sub-Grids
+
+Refinement operates at the **region level**, not the per-cell level. Selecting a 2×2 region at scale 3 produces one unified 6×6 sub-grid that occupies exactly the same world-space footprint as the original 2×2 region. The coarse cells in that region are rendered semi-transparently behind the sub-grid.
+
+#### 2.5.2 Boundary Connectivity Constraint
+
+The constraint passed to the AI for each refinement is minimal by design:
+
+```
+{ left: 'open' | 'wall', right: 'open' | 'wall',
+  top:  'open' | 'wall', bottom: 'open' | 'wall' }
+```
+
+A side is `open` if any face on that edge is Open; `wall` if all faces are non-Open. The AI must ensure that the sub-grid's corresponding edges respect this connectivity, but is otherwise free to place internal walls anywhere.
+
+This minimal constraint is sufficient for spatial consistency while maximising the AI's freedom to capture local detail.
+
+#### 2.5.3 Token Efficiency
+
+Sending only a small cropped image patch (instead of the full floor plan) and four single-word constraints (instead of the full topology JSON) reduces the token cost of each refinement call by approximately one order of magnitude compared to resending the full context.
+
+### 2.6 Step 3 (original) — Face-Level Semantic Classification
+
+> **Note:** This section is retained for reference. In the current floor-plan pipeline, face classification is split into Step 2 (binary topology) and Step 3 (feature piercing) as described above.
 
 For each face of each refined particle, the AI selects an Option ID. This is the core step, and it differs fundamentally from traditional reconstruction:
 

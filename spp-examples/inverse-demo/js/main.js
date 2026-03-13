@@ -490,84 +490,117 @@ function showDensityBar(gridX, gridZ, layout, crop) {
 }
 
 // ─── Mock Data ──────────────────────────────────────────────
+// Simulates the full Phase 1–4 reconstruction pipeline output
+// for a standard 两室一厅 (2BR + living) apartment floor plan.
+//
+// Layout (6×5):
+//   z=0: Kitchen  Kitchen  Hallway   Hallway   Bedroom   Bedroom
+//   z=1: Kitchen  Kitchen  Hallway   Hallway   Bedroom   Bedroom
+//   z=2: LivRoom  LivRoom  LivRoom   Hallway   Bathroom  Bathroom
+//   z=3: LivRoom  LivRoom  LivRoom   Hallway   MasterBed MasterBed
+//   z=4: LivRoom  LivRoom  LivRoom   Hallway   MasterBed MasterBed
 
 if (new URLSearchParams(location.search).has('mock')) {
 
-    const A = 'Space_A', B = 'Space_B', C = 'Space_C', D = 'Space_D', E = 'Space_E';
-    const mockCrop = { x: 0.075, y: 0.112, w: 0.85, h: 0.81 };
+    // ── Phase 1 output ──────────────────────────────────────
+    const K = 'Kitchen', H = 'Hallway', BD = 'Bedroom';
+    const LR = 'Living Room', BA = 'Bathroom', MB = 'Master Bedroom';
 
-    // Map old names to new ones for logic compatibility
-    const K = A, H = B, B_room = C, BR = D, LR = E;
+    const mockLayout = [
+        [K,  K,  H,  H,  BD, BD],
+        [K,  K,  H,  H,  BD, BD],
+        [LR, LR, LR, H,  BA, BA],
+        [LR, LR, LR, H,  MB, MB],
+        [LR, LR, LR, H,  MB, MB],
+    ];
+    const mockCrop = { x: 0.06, y: 0.08, w: 0.88, h: 0.88 };
+    const GRID_X = 6, GRID_Z = 5;
 
-    // AI Step 1: Base low-res layout
-    const baseLayout = [
-        [K, K, K, K, H, H, B_room, B_room, B_room, B_room, B_room],
-        [K, K, K, K, H, H, B_room, B_room, B_room, B_room, B_room],
-        [K, K, K, K, H, H, B_room, B_room, B_room, B_room, B_room],
-        [K, K, K, K, H, H, BR, BR, BR, BR, BR], 
-        [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR], 
-        [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
-        [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
-        [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
-        [LR, LR, LR, LR, H, H, BR, BR, BR, BR, BR],
+    // ── Phase 2: binary topology helper ─────────────────────
+    // faceOptions indices: 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z
+    function roomAt(x, z) {
+        return mockLayout[z]?.[x] ?? null;
+    }
+    function binaryFace(x, z, nx, nz) {
+        const r = roomAt(x, z), n = roomAt(nx, nz);
+        if (n === null) return [10];   // exterior wall
+        if (r === n)   return [0];    // same room → open
+        return [10];                   // different room → wall
+    }
+
+    // ── Phase 3 door/window annotations ─────────────────────
+    // Doors: each entry annotates both sides of the passage
+    // Windows: exterior faces of rooms that typically have glazing
+    const annotations = [
+        // Kitchen ↔ Hallway door (z=1 row boundary)
+        { x: 1, z: 1, face: 0, optionId: 2 }, { x: 2, z: 1, face: 1, optionId: 2 },
+        // Bedroom ↔ Hallway door
+        { x: 3, z: 1, face: 0, optionId: 2 }, { x: 4, z: 1, face: 1, optionId: 2 },
+        // Bathroom ↔ Hallway door
+        { x: 3, z: 2, face: 0, optionId: 2 }, { x: 4, z: 2, face: 1, optionId: 2 },
+        // Living Room ↔ Hallway door
+        { x: 2, z: 3, face: 0, optionId: 2 }, { x: 3, z: 3, face: 1, optionId: 2 },
+        // Master Bedroom ↔ Hallway door
+        { x: 3, z: 3, face: 0, optionId: 2 }, { x: 4, z: 3, face: 1, optionId: 2 },
+        // Windows — Kitchen left exterior
+        { x: 0, z: 0, face: 1, optionId: 20 },
+        // Windows — Bedroom top exterior
+        { x: 4, z: 0, face: 5, optionId: 20 }, { x: 5, z: 0, face: 5, optionId: 20 },
+        // Windows — Living Room left exterior
+        { x: 0, z: 2, face: 1, optionId: 20 }, { x: 0, z: 3, face: 1, optionId: 20 },
+        // Windows — Living Room bottom exterior
+        { x: 1, z: 4, face: 4, optionId: 20 }, { x: 2, z: 4, face: 4, optionId: 20 },
+        // Windows — Master Bedroom right exterior
+        { x: 5, z: 3, face: 0, optionId: 20 },
+        // Windows — Master Bedroom bottom-right corner
+        { x: 4, z: 4, face: 4, optionId: 20 }, { x: 5, z: 4, face: 0, optionId: 20 }, { x: 5, z: 4, face: 4, optionId: 20 },
     ];
 
-    const baseDoors = [
-        { x1: 3, z1: 2, x2: 4, z2: 2 },  // Kitchen ↔ Hallway
-        { x1: 5, z1: 2, x2: 6, z2: 2 },  // Bathroom ↔ Hallway
-        { x1: 3, z1: 6, x2: 4, z2: 6 },  // Living Room ↔ Hallway
-        { x1: 5, z1: 6, x2: 6, z2: 6 },  // Bedroom ↔ Hallway
-    ];
+    // ── Build cells (Phase 2 topology + Phase 4 piercing) ───
+    const annMap = new Map();
+    for (const a of annotations) annMap.set(`${a.x},${a.z},${a.face}`, a.optionId);
 
-    // AI Step 3 (Iterative Refinement): Localized high-res overrides
-    const cellModifications = [];
-
-    // Kitchen/LR boundary optimization
-    // Base row 3 (cols 0-3) is Kitchen, but the wall should be exactly at the bottom half
-    // of the sub-cells. i.e., in fine grid, the bottom sub-cells of row 3 should be LR.
-    for (let bx = 0; bx <= 3; bx++) {
-        cellModifications.push({ basePos: [bx, 3], subPos: [0, 1], room: LR }); // left side of cell
-        cellModifications.push({ basePos: [bx, 3], subPos: [1, 1], room: LR }); // right side of cell
+    function faceOption(x, z, face) {
+        const key = `${x},${z},${face}`;
+        if (annMap.has(key)) return [annMap.get(key)];
+        const [dx, dz] = [[1,0],[-1,0],[0,0],[0,0],[0,1],[0,-1]][face];
+        return binaryFace(x, z, x + dx, z + dz);
     }
 
-    // Bath/BR boundary optimization
-    // Base row 2 (cols 6-10) is Bathroom, but the top half of those sub-cells should stay Bathroom,
-    // and the bottom half should be Bedroom. Wait, earlier mock said: base row 2 bottom -> BR
-    for (let bx = 6; bx <= 10; bx++) {
-        cellModifications.push({ basePos: [bx, 2], subPos: [0, 1], room: BR });
-        cellModifications.push({ basePos: [bx, 2], subPos: [1, 1], room: BR });
+    const mockCells = [];
+    for (let z = 0; z < GRID_Z; z++) {
+        for (let x = 0; x < GRID_X; x++) {
+            const room = roomAt(x, z);
+            if (!room) continue;
+            mockCells.push({
+                position:    [x, 0, z],
+                size:        [1, 1, 1],
+                faceStates:  0b111111,
+                room,
+                faceOptions: [
+                    faceOption(x, z, 0),  // +X
+                    faceOption(x, z, 1),  // -X
+                    [],                    // +Y
+                    [],                    // -Y
+                    faceOption(x, z, 4),  // +Z
+                    faceOption(x, z, 5),  // -Z
+                ],
+            });
+        }
     }
-
-    // Process via the Data Restructuring Layer
-    const SCALE = 2;
-    const { fineLayout, cells: fineCells, gridX: fineX, gridZ: fineZ } = optimizeGrid(baseLayout, SCALE, cellModifications, baseDoors);
-
-    // Entrance doors (Hardcoded for mock top-level)
-    for (const cell of fineCells) {
-        const [x, , z] = cell.position;
-        // Ensure standard fields are present (optimizeGrid calls generateCellsFromLayout which we updated, so this is just insurance)
-        cell.size = cell.size || [1, 1, 1];
-        cell.faceStates = cell.faceStates || 63;
-        
-        if (x >= 8 && x <= 11 && z <= 1) cell.faceOptions[4] = [2];
-    }
-
-    const mockStep1 = { crop: mockCrop, gridX: 11, gridZ: 9, layout: baseLayout };
 
     const mockResult = {
-        gridX: fineX, gridZ: fineZ,
-        layout: fineLayout,
-        description: 'Fine 22×18 grid generated via optimizeGrid (scale=2), applying local room boundary corrections.',
-        cells: fineCells,
+        gridX: GRID_X,
+        gridZ: GRID_Z,
+        description: '两室一厅 — Phase 1–4 mock reconstruction: 6×5 grid, binary topology, doors & windows pierced.',
+        cells: mockCells,
     };
 
-    // ── Top-down camera toggle ──
+    // ── Top-down camera toggle ───────────────────────────────
     let isTopDown = false;
     let savedCamPos = null, savedCamTarget = null;
-
     const topDownBtn = document.getElementById('topDownBtn');
     if (topDownBtn) {
-        // ... (Listener remains mostly unchanged)
         topDownBtn.addEventListener('click', () => {
             isTopDown = !isTopDown;
             if (isTopDown) {
@@ -589,15 +622,18 @@ if (new URLSearchParams(location.search).has('mock')) {
         });
     }
 
+    // ── Boot mock ────────────────────────────────────────────
     setTimeout(() => {
         showImage('assets/mock-floorplan.png');
-        imagePreview.onload = () => showGridOnImage(mockStep1.gridX, mockStep1.gridZ, mockStep1.layout, mockCrop);
-        showDensityBar(mockStep1.gridX, mockStep1.gridZ, mockStep1.layout, mockCrop);
+        imagePreview.onload = () => showGridOnImage(GRID_X, GRID_Z, mockLayout, mockCrop);
+        showDensityBar(GRID_X, GRID_Z, mockLayout, mockCrop);
         renderResult(mockResult);
-        const fullOutput = { step1_gridSizing: mockStep1, step2_faceClassification: mockResult };
-        jsonOutput.textContent = JSON.stringify(fullOutput, null, 2);
+        jsonOutput.textContent = JSON.stringify({
+            phase1: { crop: mockCrop, gridX: GRID_X, gridZ: GRID_Z, layout: mockLayout },
+            phase4_cells: mockResult,
+        }, null, 2);
         descriptionText.textContent = mockResult.description;
-        setStatus(`Mock (optimizeGrid): ${fineCells.length} cells in ${fineX}×${fineZ} - 5-Phase architecture aligned`, 'success');
+        setStatus(`Mock: ${mockCells.length} cells (${GRID_X}×${GRID_Z}) — Phase 1–4 pipeline`, 'success');
         editInfo.style.display = 'block';
         document.getElementById('exportBtn').disabled = false;
     }, 300);
