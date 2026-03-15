@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPP Inverse Modeling — Demo V2</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+
+    <!-- Three.js full-screen canvas -->
+    <canvas id="viewport"></canvas>
+
+    <!-- Top-left toolbar -->
+    <div id="toolbar">
+        <button id="uploadBtn">📎 Upload</button>
+        <input type="file" id="fileInput" accept="image/*" style="display:none">
+
+        <div class="toolbar-sep"></div>
+
+        <select id="modelSelect"></select>
+        <input type="password" id="apiKey" placeholder="API Key...">
+
+        <div class="toolbar-sep"></div>
+
+        <button id="analyzeBtn" disabled>▶ Analyze</button>
+        <button id="phase5Btn" disabled>🔄 Refine</button>
+        <button id="topViewBtn">T Top</button>
+        <button id="exportBtn" style="display:none">E Export</button>
+        <button id="viewBtn"   style="display:none">{ } View</button>
+    </div>
+
+    <!-- Status toast -->
+    <div id="toast"></div>
+
+    <!-- Bottom-center action bar (visible when cells are selected) -->
+    <div id="actionBar" class="hidden">
+        <button id="refineBtn">🔍 Refine Selection (<span id="selectedCount">0</span>)</button>
+        <button id="deleteBtn">🗑 Delete Refinement</button>
+    </div>
+
+    <!-- Bottom-right floor opacity -->
+    <div id="opacityControl">
+        <label for="floorOpacity">Overlay</label>
+        <input type="range" id="floorOpacity" min="0" max="100" value="60">
+    </div>
+
+    <!-- Top-right depth legend -->
+    <div id="depthLegend" style="display:none">
+        <div class="legend-item">
+            <div class="legend-dot" style="background:#d4886b"></div>depth 0 — coarse
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot" style="background:#6b8fd4"></div>depth 1 — refined
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot" style="background:#6bd49b"></div>depth 2 — re-refined
+        </div>
+    </div>
+
+    <!-- Box-select overlay -->
+    <div id="selectionBox"></div>
+
+    <!-- JSON viewer modal -->
+    <div id="jsonOverlay">
+        <div id="jsonPanel">
+            <div id="jsonHeader">
+                <span id="jsonTitle">SPP JSON</span>
+                <div id="jsonHeaderActions">
+                    <button id="jsonCopyBtn">Copy</button>
+                    <button id="jsonCloseBtn">✕</button>
+                </div>
+            </div>
+            <pre id="jsonContent"></pre>
+        </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

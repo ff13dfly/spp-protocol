@@ -242,12 +242,12 @@ Create a grid that covers ONLY the floor plan area (not the margins):
 ## Rules
 1. Study the image and estimate each room's relative width and height
 2. Choose a common unit size such that rooms fit as integer multiples
-3. Assign each cell a topological Space ID (e.g., "Space_A", "Space_B", "Space_C") — cells belonging to the same enclosed region share the same ID.
+3. Assign each cell a **semantic room name** (e.g., "Kitchen", "Living Room", "Bedroom", "Bathroom", "Hallway", "Balcony") — cells belonging to the same enclosed region share the same name.
 4. Use null for cells that are exterior (outside the building)
 5. The grid should be between 4×4 and 12×12 for typical apartments
 6. CRITICAL: the grid must preserve proportions — a room twice as wide should span twice as many columns
 7. **Wall snapping (Area-Majority Rule)**: When a physical wall does not perfectly align with a cell boundary, assign the cell to whichever room occupies MORE of that cell's area. Walls must always land on cell boundaries.
-8. **Rectangular spaces**: Each Space ID should form a contiguous rectangular block. Avoid L-shaped or jagged assignments.
+8. **Rectangular spaces**: Each room name should form a contiguous rectangular block. Avoid L-shaped or jagged assignments.
 9. **Minimum size**: Every enclosed region must have at least 1 cell.
 
 ## Output
@@ -257,13 +257,13 @@ Return ONLY a JSON object:
   "gridX": <columns>,
   "gridZ": <rows>,
   "layout": [
-    ["Space_A", "Space_A", "Space_B", ...],
-    ["Space_A", "Space_A", "Space_B", ...],
+    ["Kitchen", "Kitchen", "Hallway", ...],
+    ["Kitchen", "Kitchen", "Hallway", ...],
     ...
   ]
 }
 
-Where layout[row][col] is the room name for that cell, or null for exterior cells.
+Where layout[row][col] is the semantic room name for that cell, or null for exterior cells.
 Example:
 {
   "crop": { "x": 0.08, "y": 0.10, "w": 0.84, "h": 0.82 },
@@ -286,14 +286,14 @@ Layout:
 __LAYOUT__
 
 ## Phase 2: Binary Topology Generation
-Your task is to classify connections between the Space IDs. To simplify the process, use ONLY two options for now:
+Your task is to classify connections between rooms. To simplify the process, use ONLY two options for now:
 
-- 0: **Open** — ID same (passage continues within the same region)
-- 10: **Wall** — ID different (structural wall between regions or exterior)
+- 0: **Open** — same room (passage continues within the same region)
+- 10: **Wall** — different rooms or exterior boundary
 
 ## Rules
-1. **Same-ID adjacency**: If two adjacent cells belong to the SAME Space ID → use 0 (open).
-2. **Different-ID adjacency**: If adjacent cells are DIFFERENT IDs or exterior → use 10 (wall).
+1. **Same-room adjacency**: If two adjacent cells belong to the SAME room name → use 0 (open).
+2. **Different-room adjacency**: If adjacent cells are DIFFERENT rooms or exterior → use 10 (wall).
 3. **DO NOT generate doors or windows yet**. These will be processed in a later phase. Focus 100% on the physical shell.
 
 ## Output
@@ -305,13 +305,45 @@ Return ONLY a JSON object:
   "cells": [
     {
       "position": [x, 0, z],
-      "room": "<Space ID>",
+      "room": "<semantic room name>",
       "faceOptions": [[id], [id], [], [], [id], [id]]
     }
   ]
 }
 
 Only include cells where layout is NOT null.`;
+
+// Local refinement variant of STEP1_PROMPT (used in Phase 5 recursive local calls).
+// Placeholders: __CONSTRAINTS__, __PARENT_LAYOUT__, __COLS__, __ROWS__
+const STEP1_LOCAL_PROMPT = `You are a spatial layout refiner. Given a CROPPED region of a floor plan and boundary connectivity constraints, generate a fine-grained sub-grid for that region only.
+
+## Boundary Constraints
+The sub-grid must respect the connectivity of the region's four outer edges:
+__CONSTRAINTS__
+
+(open = this edge connects to an adjacent space; wall = solid boundary)
+
+## Known rooms in this region
+__PARENT_LAYOUT__
+
+## Task
+1. The cropped image covers a __COLS__×__ROWS__ area in the parent grid.
+2. Choose a scale factor (2, 3, or 4) based on the visual complexity of this region.
+3. Generate a unified sub-grid of size (cols × scale) × (rows × scale).
+4. Assign semantic room names to each cell. Internal wall placement is free — only the boundary connectivity above must be respected.
+5. Use null for any sub-cells that are exterior.
+
+## Output
+Return ONLY a JSON object (no crop field needed — the crop is already done):
+{
+  "scale": <2|3|4>,
+  "gridX": <cols * scale>,
+  "gridZ": <rows * scale>,
+  "layout": [
+    ["Room Name", "Room Name", ...],
+    ...
+  ]
+}`;
 
 const STEP3_PROMPT = `You are an SPP feature detector. Given a floor plan image and an existing binary wall topology, identify all doors and windows.
 
@@ -477,15 +509,58 @@ export class RecursiveGridManager {
      * @param {Object} aiResultJSON - AI 吐出的针对该局部的 4x4 Cells
      * @returns {Object} 经过数据更新和校验后的 ParentCell
      */
+    /**
+     * Single-cell refinement: attaches AI result as cell.refinement (SPP-Core v1.1).
+     * For multi-cell regions, use integratePerCellRefinement instead.
+     */
     static integrateSubGrid(parentCell, aiResultJSON) {
-        // 将结果植入父格子的 subGrid 树结构中
-        parentCell.subGrid = {
+        parentCell.refinement = {
             gridX: aiResultJSON.gridX,
             gridZ: aiResultJSON.gridZ,
-            cells: aiResultJSON.cells
+            cells: aiResultJSON.cells,
         };
-
         return parentCell;
+    }
+
+    /**
+     * Region refinement: splits AI's unified NxM sub-grid into per-cell refinements.
+     * Each selectedCell gets a scale×scale sub-chunk (ParticleCell.refinement = ParticleChunk).
+     *
+     * @param {Array} selectedCells - parentCells in the main grid (need position + faceOptions)
+     * @param {Object} aiOutput - { scale, gridX, gridZ, cells } from AI (unified sub-grid,
+     *   positions [0..gridX-1, 0, 0..gridZ-1] covering the full selection area)
+     * @returns {Array} selectedCells with .refinement set on each
+     */
+    static integratePerCellRefinement(selectedCells, aiOutput) {
+        const { scale, cells: subCells } = aiOutput;
+
+        const xs = selectedCells.map(c => c.position[0]);
+        const zs = selectedCells.map(c => c.position[2]);
+        const minX = Math.min(...xs);
+        const minZ = Math.min(...zs);
+
+        for (const parent of selectedCells) {
+            const [px, , pz] = parent.position;
+            // offset of this parent cell within the selection (in sub-grid coords)
+            const ox = (px - minX) * scale;
+            const oz = (pz - minZ) * scale;
+
+            parent.refinement = {
+                gridX: scale,
+                gridZ: scale,
+                cells: subCells
+                    .filter(c =>
+                        c.position[0] >= ox && c.position[0] < ox + scale &&
+                        c.position[2] >= oz && c.position[2] < oz + scale
+                    )
+                    .map(c => ({
+                        ...c,
+                        position: [c.position[0] - ox, 0, c.position[2] - oz],
+                    })),
+            };
+        }
+
+        return selectedCells;
     }
 
     /**
@@ -497,24 +572,26 @@ export class RecursiveGridManager {
      * @param {number} parentWorldScale - 父级在世界中的尺寸缩放
      * @returns {Array} 铺平后带有 worldPosition 和 worldScale 的叶子节点（真实的物理像素/网格）
      */
-    static flattenRecursiveCells(cells, parentWorldPos = [0, 0, 0], parentWorldScale = 1.0, depth = 0) {
+    static flattenRecursiveCells(cells, parentWorldPos = [0, 0, 0], parentWorldScale = 1.0, depth = 0, parentCell = null) {
         let flattenedLeaves = [];
 
         for (const cell of cells) {
-            if (cell.subGrid && Array.isArray(cell.subGrid.cells)) {
-                // 宏观节点：先算子网格跨度，再计算当前格子的世界坐标
-                const gridSpan = Math.max(cell.subGrid.gridX, cell.subGrid.gridZ);
+            // SPP-Core v1.1: refinement field (ParticleCell.refinement?: ParticleChunk)
+            const sub = cell.refinement || cell.subGrid; // subGrid kept for backward compat
+            if (sub && Array.isArray(sub.cells)) {
+                // 内部节点：子网格跨度决定每个子 cell 的尺寸
+                const gridSpan = Math.max(sub.gridX, sub.gridZ);
                 const subCellSize = parentWorldScale / gridSpan;
-                const worldX = parentWorldPos[0] + (cell.position[0] * subCellSize);
-                const worldY = parentWorldPos[1] + (cell.position[1] * subCellSize);
-                const worldZ = parentWorldPos[2] + (cell.position[2] * subCellSize);
-                const currentScale = parentWorldScale / gridSpan;
+                const worldX = parentWorldPos[0] + (cell.position[0] * parentWorldScale);
+                const worldY = parentWorldPos[1] + (cell.position[1] * parentWorldScale);
+                const worldZ = parentWorldPos[2] + (cell.position[2] * parentWorldScale);
 
                 const subCellLeaves = this.flattenRecursiveCells(
-                    cell.subGrid.cells,
+                    sub.cells,
                     [worldX, worldY, worldZ],
-                    currentScale,
-                    depth + 1
+                    subCellSize,
+                    depth + 1,
+                    cell  // pass current cell as parent for reverse-lookup
                 );
                 flattenedLeaves.push(...subCellLeaves);
             } else {
@@ -527,11 +604,57 @@ export class RecursiveGridManager {
                     worldPosition: [worldX, worldY, worldZ],
                     worldScale: parentWorldScale,
                     _depth: depth,
+                    _parentCell: parentCell,  // null for root-level cells
                 });
             }
         }
 
         return flattenedLeaves;
+    }
+
+    /**
+     * 3b. 【内部节点收集】收集所有有 refinement 的内部节点，附带世界坐标。
+     * 供渲染器将这些节点绘制为半透明（表示"已被细化，退为背景"）。
+     * 与 flattenRecursiveCells 互补：flat 输出叶子，此函数输出内部节点。
+     *
+     * @param {Array} cells - 根层 cells
+     * @param {Array} parentWorldPos - [x, y, z]
+     * @param {number} parentWorldScale - 根 cell 的世界尺寸
+     * @param {number} depth - 当前深度
+     * @returns {Array} 内部节点数组，每项带 worldPosition, worldScale, _depth
+     */
+    static collectInteriorNodes(cells, parentWorldPos = [0, 0, 0], parentWorldScale = 1.0, depth = 0) {
+        const interiorNodes = [];
+
+        for (const cell of cells) {
+            const sub = cell.refinement || cell.subGrid;
+            if (sub && Array.isArray(sub.cells)) {
+                const gridSpan = Math.max(sub.gridX, sub.gridZ);
+                const subCellSize = parentWorldScale / gridSpan;
+                const worldX = parentWorldPos[0] + (cell.position[0] * parentWorldScale);
+                const worldY = parentWorldPos[1] + (cell.position[1] * parentWorldScale);
+                const worldZ = parentWorldPos[2] + (cell.position[2] * parentWorldScale);
+
+                // this cell is an interior node — include it for semi-transparent rendering
+                interiorNodes.push({
+                    ...cell,
+                    worldPosition: [worldX, worldY, worldZ],
+                    worldScale: parentWorldScale,
+                    _depth: depth,
+                });
+
+                // recurse: deeper levels may also have their own interior nodes
+                const deeper = this.collectInteriorNodes(
+                    sub.cells,
+                    [worldX, worldY, worldZ],
+                    subCellSize,
+                    depth + 1
+                );
+                interiorNodes.push(...deeper);
+            }
+        }
+
+        return interiorNodes;
     }
 
     /**
@@ -542,7 +665,7 @@ export class RecursiveGridManager {
      * @param {number} subGridSize - 目标细化精度（AI 可自行选择 2/3/4）
      * @returns {Object} 包含 boundingBox, rooms, boundaryConstraints, instruction
      */
-    static createBatchRefineContext(selectedCells, subGridSize = 4) {
+    static createBatchRefineContext(selectedCells) {
         const xs = selectedCells.map(c => c.position[0]);
         const zs = selectedCells.map(c => c.position[2]);
         const minX = Math.min(...xs), maxX = Math.max(...xs);
@@ -550,24 +673,23 @@ export class RecursiveGridManager {
 
         const selectedSet = new Set(selectedCells.map(c => `${c.position[0]},${c.position[2]}`));
 
-        // 提取外边界约束：选中区域边缘的 face，若邻格不在选中集内，则该 face 的 optionId 不可改变
-        const FACE_NEIGHBOR = [
-            [0, [1, 0]],   // +X face → 右邻
-            [1, [-1, 0]],  // -X face → 左邻
-            [4, [0, -1]],  // +Z face → 前邻（z-1）
-            [5, [0, 1]],   // -Z face → 后邻（z+1）
-        ];
-        const boundaryConstraints = [];
-        for (const cell of selectedCells) {
-            const [cx, , cz] = cell.position;
-            for (const [faceIdx, [dx, dz]] of FACE_NEIGHBOR) {
-                const nKey = `${cx + dx},${cz + dz}`;
-                if (!selectedSet.has(nKey)) {
-                    // 邻格不在选区内 → 这条边是外边界，约束其 optionId
-                    const optionId = cell.faceOptions[faceIdx]?.[0] ?? 10;
-                    boundaryConstraints.push({ x: cx, z: cz, face: faceIdx, optionId });
-                }
-            }
+        // For each of the 4 edges, check if any boundary face is Open (id=0).
+        // face 1 (-X) → left edge (cells at x=minX, neighbor x-1 outside)
+        // face 0 (+X) → right edge (cells at x=maxX, neighbor x+1 outside)
+        // face 4 (+Z) → top edge (cells at z=minZ, neighbor z-1 outside per FACE_NEIGHBOR)
+        // face 5 (-Z) → bottom edge (cells at z=maxZ, neighbor z+1 outside)
+        const EDGE_FACE = {
+            left:   { faceIdx: 1, test: c => c.position[0] === minX },
+            right:  { faceIdx: 0, test: c => c.position[0] === maxX },
+            top:    { faceIdx: 4, test: c => c.position[2] === minZ },
+            bottom: { faceIdx: 5, test: c => c.position[2] === maxZ },
+        };
+
+        const constraints = {};
+        for (const [side, { faceIdx, test }] of Object.entries(EDGE_FACE)) {
+            const edgeCells = selectedCells.filter(test);
+            const hasOpen = edgeCells.some(c => (c.faceOptions[faceIdx]?.[0] ?? 10) === 0);
+            constraints[side] = hasOpen ? 'open' : 'wall';
         }
 
         const rooms = [...new Set(selectedCells.map(c => c.room).filter(Boolean))];
@@ -575,13 +697,12 @@ export class RecursiveGridManager {
         return {
             boundingBox: { minX, maxX, minZ, maxZ },
             rooms,
-            resolution: `${subGridSize}x${subGridSize}`,
-            boundaryConstraints,
+            constraints,   // { left, right, top, bottom } — 'open' | 'wall'
             instruction:
                 `Refine the selected region (${minX},${minZ})-(${maxX},${maxZ}) ` +
                 `containing rooms: ${rooms.join(', ')}. ` +
-                `Choose a scale (2, 3, or 4) based on area complexity. ` +
-                `Do not violate boundary constraints: ${JSON.stringify(boundaryConstraints)}.`,
+                `Choose a scale (2, 3, or 4) based on visual complexity. ` +
+                `Boundary connectivity: ${JSON.stringify(constraints)}.`,
         };
     }
 }
@@ -616,16 +737,67 @@ export class SPPInverseEngine {
     /**
      * Step 1: Detect crop bounds + fine-grained grid + room layout.
      *
-     * @param {string} imageDataUrl - Base64 data URL of the floor plan image
-     * @returns {Object} { crop, gridX, gridZ, layout }
+     * Global call (Phase 1):
+     *   analyzeGridSize(imageDataUrl)
+     *   → detects crop + overlays grid on full floor plan
+     *
+     * Local call (Phase 5 recursive):
+     *   analyzeGridSize(cropImageDataUrl, { constraints, parentLayout })
+     *   → constraints: { left, right, top, bottom: 'open'|'wall' }
+     *   → parentLayout: string[][] sub-matrix of parent grid covering this region
+     *   → uses STEP1_LOCAL_PROMPT; returns { scale, gridX, gridZ, layout } (no crop field)
+     *
+     * @param {string} imageDataUrl
+     * @param {Object} [localContext] - if provided, runs local refinement mode
+     * @returns {Object} { crop?, gridX, gridZ, layout, scale? }
      */
-    async analyzeGridSize(imageDataUrl) {
-        this.onStatus('Step 1/2: Detecting floor plan bounds & analyzing grid layout...');
+    async analyzeGridSize(imageDataUrl, localContext = null) {
+        const isLocal = localContext !== null;
+
+        if (isLocal) {
+            const { constraints, parentLayout } = localContext;
+            const cols = parentLayout?.[0]?.length ?? '?';
+            const rows = parentLayout?.length ?? '?';
+            const constraintLines = Object.entries(constraints)
+                .map(([side, val]) => `${side}: ${val}`)
+                .join('\n');
+            const layoutDesc = parentLayout
+                ? parentLayout.map(row => row.map(c => c || '(exterior)').join(' | ')).join('\n')
+                : '(unknown)';
+
+            const prompt = STEP1_LOCAL_PROMPT
+                .replace('__CONSTRAINTS__', constraintLines)
+                .replace('__PARENT_LAYOUT__', layoutDesc)
+                .replace('__COLS__', String(cols))
+                .replace('__ROWS__', String(rows));
+
+            this.onStatus('Phase 5 local Step 1: Refining local grid...');
+            const text = await this.llmProvider(
+                imageDataUrl,
+                prompt,
+                'Analyze this cropped floor plan region and generate a fine-grained sub-grid. Return ONLY the JSON.'
+            );
+
+            let gridInfo;
+            try {
+                const cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+                gridInfo = JSON.parse(cleaned);
+            } catch (e) {
+                throw new Error(`Local Step 1 failed to parse: ${e.message}\nRaw: ${text.slice(0, 200)}`);
+            }
+            if (!gridInfo.gridX || !gridInfo.gridZ || !gridInfo.layout) {
+                throw new Error(`Local Step 1 returned invalid grid info: ${JSON.stringify(gridInfo).slice(0, 200)}`);
+            }
+            this.onStatus(`Local Step 1 done: ${gridInfo.gridX}×${gridInfo.gridZ} sub-grid (scale=${gridInfo.scale}).`);
+            return gridInfo;
+        }
+
+        this.onStatus('Step 1: Detecting floor plan bounds & analyzing grid layout...');
 
         const text = await this.llmProvider(
             imageDataUrl,
             STEP1_PROMPT,
-            'Analyze this floor plan. First detect the floor plan bounds (crop), then output a fine-grained grid within those bounds. Return ONLY the JSON.'
+            'Analyze this floor plan. First detect the floor plan bounds (crop), then output a fine-grained grid with semantic room names. Return ONLY the JSON.'
         );
 
         let gridInfo;
