@@ -66,15 +66,15 @@ export class LayerRenderer {
         this.camera.position.set(8, 14, 18);
         this.camera.lookAt(0, 0, 0);
 
-        // Prevent right-click context menu so OrbitControls can use right-drag to rotate
+        // Suppress right-click context menu so right-drag pan works uninterrupted
         canvas.addEventListener('contextmenu', e => e.preventDefault());
 
-        // OrbitControls — left button owned by selection.js
+        // Standard OrbitControls: left=rotate, middle=dolly, right=pan
         this.controls = new OrbitControls(this.camera, canvas);
         this.controls.mouseButtons = {
-            LEFT:   null,
-            MIDDLE: THREE.MOUSE.PAN,
-            RIGHT:  THREE.MOUSE.ROTATE,
+            LEFT:   THREE.MOUSE.ROTATE,
+            MIDDLE: THREE.MOUSE.DOLLY,
+            RIGHT:  THREE.MOUSE.PAN,
         };
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.08;
@@ -206,6 +206,26 @@ export class LayerRenderer {
     getCamera()      { return this.camera; }
     getFloorMeshes() { return this._floorMeshes; }
 
+    /** Raycast at (clientX, clientY) and return the leaf cell under the cursor, or null. */
+    hitTest(clientX, clientY) {
+        const canvas = this.renderer.domElement;
+        const rect = canvas.getBoundingClientRect();
+        const nx = ((clientX - rect.left)  / rect.width)  * 2 - 1;
+        const ny = -((clientY - rect.top) / rect.height) * 2 + 1;
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera({ x: nx, y: ny }, this.camera);
+        const meshes = this._floorMeshes.map(f => f.mesh);
+        const hits = raycaster.intersectObjects(meshes, false);
+        if (!hits.length) return null;
+        const entry = this._floorMeshes.find(f => f.mesh === hits[0].object);
+        return entry ? entry.cell : null;
+    }
+
+    /** Disable left-button orbit so SelectionManager can own it in select mode */
+    setSelectMode(on) {
+        this.controls.mouseButtons.LEFT = on ? null : THREE.MOUSE.ROTATE;
+    }
+
     // ─── Highlight selected cells ──────────────────────────
 
     highlightSelection(selectedCells) {
@@ -217,6 +237,33 @@ export class LayerRenderer {
                 mesh.material.emissive?.setHex(0x112244);
             } else {
                 mesh.material.color.setHex(cfg.floorColor);
+                mesh.material.emissive?.setHex(0x000000);
+            }
+        }
+    }
+
+    // ─── Connectivity visualization ────────────────────────
+    // componentMap: Map<cell, componentId (integer)>
+    // selectedCells: Set<cell> — shown in blue on top
+
+    static COMPONENT_COLORS = [
+        0xe8a87c, 0x7cb8e8, 0x7ce8a8, 0xe87ca8, 0xe8e07c,
+        0xa87ce8, 0x7ce8d8, 0xe8b0a8, 0xa8e880, 0xd07ce8,
+        0xe8c47c, 0x80b0e8, 0xe87c90, 0x7ce8c0, 0xc0e87c,
+        0xe87cb8, 0x7cc8e8, 0xb0b0e8, 0xe8b87c, 0x7ce8b0,
+    ];
+
+    highlightComponents(componentMap, selectedCells) {
+        for (const { mesh, cell } of this._floorMeshes) {
+            if (selectedCells.has(cell)) {
+                mesh.material.color.setHex(0x4488ff);
+                mesh.material.emissive?.setHex(0x112244);
+            } else {
+                const compId = componentMap.get(cell);
+                const color = compId !== undefined
+                    ? LayerRenderer.COMPONENT_COLORS[compId % LayerRenderer.COMPONENT_COLORS.length]
+                    : 0x888888;
+                mesh.material.color.setHex(color);
                 mesh.material.emissive?.setHex(0x000000);
             }
         }

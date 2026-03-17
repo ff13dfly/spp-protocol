@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SPP Inverse Modeling — Demo V2</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=15">
     <script type="importmap">
     {
         "imports": {
@@ -33,10 +33,15 @@
 
         <button id="analyzeBtn" disabled>▶ Analyze</button>
         <button id="phase5Btn" disabled>🔄 Refine</button>
+        <button id="selectBtn">S Select</button>
         <button id="topViewBtn">T Top</button>
         <button id="exportBtn" style="display:none">E Export</button>
         <button id="viewBtn"   style="display:none">{ } View</button>
+        <button id="logBtn">☰ Log</button>
     </div>
+
+    <!-- Cell debug tooltip -->
+    <div id="cellTooltip"></div>
 
     <!-- Status toast -->
     <div id="toast"></div>
@@ -66,8 +71,37 @@
         </div>
     </div>
 
-    <!-- Box-select overlay -->
-    <div id="selectionBox"></div>
+    <!-- Side panel: Pipeline Log + Inspector (2 tabs) -->
+    <div id="logPanel">
+        <div id="logHeader">
+            <div id="logTabs">
+                <button class="log-tab active" id="tabLog">Pipeline</button>
+                <button class="log-tab" id="tabInspector">Inspector</button>
+            </div>
+            <button id="logClearBtn">Clear</button>
+        </div>
+
+        <!-- Tab 1: Pipeline log -->
+        <div id="logContent" class="panel-tab-content active">
+            <div id="logEntries"></div>
+        </div>
+
+        <!-- Tab 2: Inspector -->
+        <div id="inspectorContent" class="panel-tab-content">
+            <!-- Hovered cell info -->
+            <div id="inspCell">
+                <div class="insp-placeholder">Hover over a cell…</div>
+            </div>
+            <div class="insp-sep"></div>
+            <!-- AI call records -->
+            <div id="inspAiCalls">
+                <div class="insp-ai-header">AI Calls</div>
+                <div id="aiCallsList">
+                    <div class="insp-placeholder">No AI calls yet.</div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- JSON viewer modal -->
     <div id="jsonOverlay">
@@ -83,6 +117,6 @@
         </div>
     </div>
 
-    <script type="module" src="js/main.js"></script>
+    <script type="module" src="js/main.js?v=19"></script>
 </body>
 </html>

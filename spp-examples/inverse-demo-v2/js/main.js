@@ -9,10 +9,10 @@
  *   Phase 5: Top-view regression → local Phase 1-4 recursive refinement
  */
 
-import { LayerRenderer, CELL_SIZE } from './renderer.js';
-import { SelectionManager }         from './selection.js';
-import { FloorTexture }             from './floor-texture.js';
-import { RegressionEngine }         from './regression.js';
+import { LayerRenderer, CELL_SIZE } from './renderer.js?v=19';
+import { SelectionManager }         from './selection.js?v=16';
+import { FloorTexture }             from './floor-texture.js?v=16';
+import { RegressionEngine }         from './regression.js?v=16';
 import {
     SPPInverseEngine,
     RecursiveGridManager,
@@ -34,11 +34,13 @@ const MAX_DEPTH = 3;
 // ─── State ────────────────────────────────────────────────────
 
 const state = {
-    imageDataUrl: null,
-    cropInfo:     null,
-    rootCells:    [],
-    gridInfo:     null,
-    engine:       null,
+    imageDataUrl:        null,
+    autoCrop:            null,   // pixel-detected crop — set on upload, reused on analyze
+    croppedImageDataUrl: null,   // image pre-cropped to floor plan bounds — used for all AI calls
+    cropInfo:            null,
+    rootCells:           [],
+    gridInfo:            null,
+    engine:              null,
 };
 
 // ─── Module instances ─────────────────────────────────────────
@@ -61,10 +63,21 @@ const actionBar     = document.getElementById('actionBar');
 const selectedCount = document.getElementById('selectedCount');
 const refineBtn     = document.getElementById('refineBtn');
 const deleteBtn     = document.getElementById('deleteBtn');
+const selectBtn     = document.getElementById('selectBtn');
 const floorOpacity  = document.getElementById('floorOpacity');
-const selBoxEl      = document.getElementById('selectionBox');
 const depthLegend   = document.getElementById('depthLegend');
+const cellTooltip   = document.getElementById('cellTooltip');
 const viewBtn       = document.getElementById('viewBtn');
+const logBtn        = document.getElementById('logBtn');
+const logPanel      = document.getElementById('logPanel');
+const logEntries    = document.getElementById('logEntries');
+const logClearBtn   = document.getElementById('logClearBtn');
+const tabLog        = document.getElementById('tabLog');
+const tabInspector  = document.getElementById('tabInspector');
+const logContent    = document.getElementById('logContent');
+const inspectorContent = document.getElementById('inspectorContent');
+const inspCell      = document.getElementById('inspCell');
+const aiCallsList   = document.getElementById('aiCallsList');
 const jsonOverlay   = document.getElementById('jsonOverlay');
 const jsonContent   = document.getElementById('jsonContent');
 const jsonTitle     = document.getElementById('jsonTitle');
@@ -82,8 +95,7 @@ document.addEventListener('DOMContentLoaded', () => {
         canvas,
         () => layerRenderer.getCamera(),
         () => layerRenderer.getFloorMeshes(),
-        onSelectionChange,
-        selBoxEl
+        onSelectionChange
     );
 
     floorTex      = new FloorTexture();
@@ -126,8 +138,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     analyzeBtn.addEventListener('click', runReconstruct);
     phase5Btn.addEventListener('click', () => runPhase5Loop());
+    selectBtn.addEventListener('click', toggleSelectMode);
     topViewBtn.addEventListener('click', () => layerRenderer.toggleTopView());
     exportBtn.addEventListener('click', exportJSON);
+
+    // Log panel + tabs
+    logBtn.addEventListener('click', () => {
+        logPanel.classList.toggle('open');
+        logBtn.classList.toggle('active', logPanel.classList.contains('open'));
+    });
+    tabLog.addEventListener('click', () => switchTab('log'));
+    tabInspector.addEventListener('click', () => switchTab('inspector'));
+    logClearBtn.addEventListener('click', () => {
+        if (_activeTab === 'log') {
+            logEntries.innerHTML = '';
+        } else {
+            aiCallsList.innerHTML = '<div class="insp-placeholder">No AI calls yet.</div>';
+            inspCell.innerHTML    = '<div class="insp-placeholder">Hover over a cell…</div>';
+        }
+    });
 
     // JSON viewer
     viewBtn.addEventListener('click', viewJSON);
@@ -144,6 +173,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     floorOpacity.addEventListener('input', () => floorTex.setOpacity(Number(floorOpacity.value)));
+
+    // Cell hover — tooltip + inspector panel
+    canvas.addEventListener('mousemove', e => {
+        const cell = layerRenderer.hitTest(e.clientX, e.clientY);
+        if (cell) {
+            const html = formatCellTooltip(cell);
+            cellTooltip.innerHTML = html;
+            const bx = e.clientX + 16;
+            const by = e.clientY - 10;
+            cellTooltip.style.left = Math.min(bx, window.innerWidth  - 210) + 'px';
+            cellTooltip.style.top  = Math.min(by, window.innerHeight - 130) + 'px';
+            cellTooltip.classList.add('visible');
+            updateInspectorCell(cell);
+        } else {
+            cellTooltip.classList.remove('visible');
+        }
+    });
+    canvas.addEventListener('mouseleave', () => cellTooltip.classList.remove('visible'));
+
     refineBtn.addEventListener('click', refineSelected);
     deleteBtn.addEventListener('click', deleteRefinement);
     window.addEventListener('keydown', onKeyDown);
@@ -164,15 +212,185 @@ function loadFile(file) {
         return;
     }
     const reader = new FileReader();
-    reader.onload = e => {
+    reader.onload = async e => {
         state.imageDataUrl = e.target.result;
         analyzeBtn.disabled = false;
         toast('Image loaded — click Analyze to start reconstruction.');
+        await previewImage(state.imageDataUrl);
     };
     reader.readAsDataURL(file);
 }
 
+async function previewImage(dataUrl) {
+    // Auto-detect crop bounds from pixels and save for reuse in analysis
+    const crop = await detectFloorPlanBounds(dataUrl);
+    state.autoCrop = crop;
+
+    const dims = await getImageDimensions(dataUrl);
+    const aspect = (dims.width * crop.w) / (dims.height * crop.h);
+    const gridZ = 4;
+    const gridX = Math.max(1, Math.round(gridZ * aspect));
+
+    layerRenderer.render([], gridX, gridZ);
+    layerRenderer.focusScene();
+
+    floorTex.dispose();
+    await floorTex.init(layerRenderer.scene, dataUrl, crop, gridX, gridZ, CELL_SIZE);
+    floorTex.setOpacity(Number(floorOpacity.value));
+}
+
+function getImageDimensions(dataUrl) {
+    return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+        img.src = dataUrl;
+    });
+}
+
+/**
+ * Pixel-based floor plan boundary detection.
+ * Scans for the bounding box of non-white content (walls, text, lines).
+ * Fast, deterministic, no AI needed.
+ */
+function detectFloorPlanBounds(dataUrl) {
+    return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+            const W = img.naturalWidth, H = img.naturalHeight;
+            // Sample at reduced resolution for speed
+            const scale = Math.min(1, 600 / Math.max(W, H));
+            const sw = Math.round(W * scale), sh = Math.round(H * scale);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = sw; canvas.height = sh;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, sw, sh);
+            const data = ctx.getImageData(0, 0, sw, sh).data;
+
+            // A pixel is "content" if it isn't near-white
+            function isContent(x, y) {
+                const i = (y * sw + x) * 4;
+                return !(data[i] > 230 && data[i + 1] > 230 && data[i + 2] > 230);
+            }
+
+            let minX = sw, maxX = 0, minY = sh, maxY = 0, found = false;
+            for (let y = 0; y < sh; y++) {
+                for (let x = 0; x < sw; x++) {
+                    if (isContent(x, y)) {
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                        found = true;
+                    }
+                }
+            }
+
+            if (!found || maxX <= minX || maxY <= minY) {
+                resolve({ x: 0, y: 0, w: 1, h: 1 });
+                return;
+            }
+
+            const pad = 0.01;
+            const x = Math.max(0, minX / sw - pad);
+            const y = Math.max(0, minY / sh - pad);
+            const w = Math.min(1 - x, (maxX - minX) / sw + pad * 2);
+            const h = Math.min(1 - y, (maxY - minY) / sh + pad * 2);
+            resolve({ x, y, w, h });
+        };
+        img.onerror = () => resolve({ x: 0, y: 0, w: 1, h: 1 });
+        img.src = dataUrl;
+    });
+}
+
+/**
+ * Remove all-null border rows/columns from a layout grid.
+ * AI sometimes adds them as safety margin, which inflates gridX/gridZ
+ * and causes the floor texture to be stretched over empty space.
+ * Handles both JSON null and the string "null" that some models return.
+ */
+function trimNullBorders(layout) {
+    if (!layout || layout.length === 0) return layout;
+
+    // Treat JSON null, undefined, empty string, and the string "null" all as empty
+    const isEmpty  = c  => !c || c === 'null' || c === 'exterior';
+    const emptyRow = row => row.every(isEmpty);
+
+    const rows = layout.length;
+    const cols = layout[0]?.length || 0;
+    if (cols === 0) return layout;
+
+    let top = 0, bottom = rows - 1, left = 0, right = cols - 1;
+
+    while (top    <= bottom && emptyRow(layout[top]))                        top++;
+    while (bottom >= top    && emptyRow(layout[bottom]))                     bottom--;
+    while (left   <= right  && layout.every(row => isEmpty(row[left])))      left++;
+    while (right  >= left   && layout.every(row => isEmpty(row[right])))     right--;
+
+    if (top > bottom || left > right) return layout; // all null — return as-is
+
+    // Normalize: convert any "null" strings → actual null within the trimmed region
+    return layout.slice(top, bottom + 1).map(row =>
+        row.slice(left, right + 1).map(c => isEmpty(c) ? null : c)
+    );
+}
+
+/** Crop an image to a normalized rect, returns a new data URL */
+function cropToDataUrl(dataUrl, crop) {
+    return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+            const W = img.naturalWidth, H = img.naturalHeight;
+            const canvas = document.createElement('canvas');
+            canvas.width  = Math.round(W * crop.w);
+            canvas.height = Math.round(H * crop.h);
+            canvas.getContext('2d').drawImage(
+                img,
+                W * crop.x, H * crop.y, W * crop.w, H * crop.h,
+                0, 0, canvas.width, canvas.height
+            );
+            resolve(canvas.toDataURL('image/jpeg', 0.92));
+        };
+        img.src = dataUrl;
+    });
+}
+
+/**
+ * Preprocess a floor plan image: threshold to pure black-and-white.
+ * Pixels with luminance < THRESHOLD become solid black (walls/lines),
+ * all others become white (empty space).
+ * This eliminates double-line wall confusion where two thin parallel lines
+ * get mis-classified as two separate walls instead of one.
+ */
+function preprocessFloorPlan(dataUrl, threshold = 160) {
+    return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+            const W = img.naturalWidth, H = img.naturalHeight;
+            const canvas = document.createElement('canvas');
+            canvas.width = W; canvas.height = H;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const imgData = ctx.getImageData(0, 0, W, H);
+            const d = imgData.data;
+            for (let i = 0; i < d.length; i += 4) {
+                // Perceived luminance (BT.601)
+                const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                const v = lum < threshold ? 0 : 255;
+                d[i] = d[i + 1] = d[i + 2] = v;
+                d[i + 3] = 255; // fully opaque
+            }
+            ctx.putImageData(imgData, 0, 0);
+            resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = () => resolve(dataUrl); // fall back to original if anything fails
+        img.src = dataUrl;
+    });
+}
+
 // ─── Build engine ─────────────────────────────────────────────
+
+let _currentCallLabel = '';
 
 function buildEngine() {
     const apiKey   = apiKeyInput.value.trim();
@@ -184,9 +402,18 @@ function buildEngine() {
     }
 
     return new SPPInverseEngine({
-        llmProvider: async (imageDataUrl, systemPrompt, userText) =>
-            callModel(apiKey, imageDataUrl, systemPrompt, userText, modelDef),
-        onStatus: msg => toast(msg, 'info'),
+        llmProvider: async (imageDataUrl, systemPrompt, userText) => {
+            const start = Date.now();
+            const label = _currentCallLabel || 'AI Call';
+            const result = await callModel(apiKey, imageDataUrl, systemPrompt, userText, modelDef);
+            addAiCallRecord(label, systemPrompt, userText, result, Date.now() - start);
+            return result;
+        },
+        onStatus: msg => {
+            toast(msg, 'info');
+            log(msg, 'running');
+            _currentCallLabel = msg.replace(/\.\.\.$/, '').trim();
+        },
     });
 }
 
@@ -201,35 +428,100 @@ async function runReconstruct() {
 
     setAnalyzing(true);
     selectionMgr.clear();
+    log('─── Reconstruction started ───', 'phase');
 
     try {
         let gridInfo, cells;
 
         if (MOCK) {
+            log('Mock mode — using preset data');
             ({ gridInfo, cells } = buildMockData());
+
+            state.gridInfo  = gridInfo;
+            state.rootCells = cells;
+            state.cropInfo  = gridInfo.crop || { x: 0, y: 0, w: 1, h: 1 };
         } else {
-            const result = await engine.reconstruct(state.imageDataUrl);
-            gridInfo = result.gridInfo;
-            cells    = result.cells;
+            // ── Phase 1a: Auto-detect crop (pixel analysis, no AI) ──
+            log('Phase 1a: Auto-detecting floor plan bounds...', 'running');
+            const autoCrop = state.autoCrop || await detectFloorPlanBounds(state.imageDataUrl);
+            state.autoCrop = autoCrop;
+            log(`Crop: x=${autoCrop.x.toFixed(3)}, y=${autoCrop.y.toFixed(3)}, w=${autoCrop.w.toFixed(3)}, h=${autoCrop.h.toFixed(3)}`);
+
+            // ── Phase 1b: AI layout analysis (3-step: rooms → grid size → fill) ─
+            log('Phase 1b: Cropping and preprocessing image...', 'running');
+            const croppedImage = await cropToDataUrl(state.imageDataUrl, autoCrop);
+            const processedImage = await preprocessFloorPlan(croppedImage);
+            state.croppedImageDataUrl = processedImage;
+
+            // Compute aspect ratio for grid size calculation
+            const dims = await getImageDimensions(state.imageDataUrl);
+            const aspectRatio = (dims.width * autoCrop.w) / (dims.height * autoCrop.h);
+
+            const layoutResult = await engine.analyzeLayoutOnly(processedImage, aspectRatio);
+
+            // Trim any residual null borders as a safety net
+            const trimmedLayout = trimNullBorders(layoutResult.layout);
+            const trimmedGridX  = trimmedLayout[0]?.length || layoutResult.gridX;
+            const trimmedGridZ  = trimmedLayout.length     || layoutResult.gridZ;
+
+            gridInfo = { ...layoutResult, layout: trimmedLayout, gridX: trimmedGridX, gridZ: trimmedGridZ, crop: autoCrop };
+            log(`Phase 1 done: ${trimmedGridX}×${trimmedGridZ} grid`);
+            gridInfo.layout.forEach((row, z) => log(`  row ${z}: ${row.map(r => r || '·').join(' | ')}`));
+
+            // ── Phase 2: Deterministic wall topology ─────────────
+            log('Phase 2: Generating walls from layout...');
+            cells = generateCellsFromLayout(gridInfo.layout, gridInfo.gridX, gridInfo.gridZ, []);
+            log(`Phase 2 done: ${cells.length} cells`);
+
+            // ── Render after Phase 2 so user sees structure ───────
+            state.gridInfo  = gridInfo;
+            state.rootCells = cells;
+            state.cropInfo  = autoCrop;
+
+            layerRenderer.render(state.rootCells, gridInfo.gridX, gridInfo.gridZ);
+            layerRenderer.focusScene();
+            floorTex.dispose();
+            await floorTex.init(
+                layerRenderer.scene, state.imageDataUrl, state.cropInfo,
+                gridInfo.gridX, gridInfo.gridZ, CELL_SIZE
+            );
+            floorTex.setOpacity(Number(floorOpacity.value));
+            log('Phase 1+2 preview rendered — waiting for door detection...', 'success');
+
+            // ── Phase 3: AI door/window detection ────────────────
+            // IMPORTANT: use the same pre-cropped image as Phase 1b so that
+            // the AI's visual cell positions match the grid coordinates.
+            log('Phase 3: Detecting doors & windows (AI)...', 'running');
+            let annotations = [];
+            try {
+                annotations = await engine.detectFeatures(processedImage, cells, gridInfo);
+                const maxSane = Math.max(8, cells.length * 2);
+                if (annotations.length > maxSane) {
+                    log(`Phase 3: ${annotations.length} features (>${maxSane} limit) — Phase 3 results will be discarded`, 'error');
+                } else {
+                    log(`Phase 3 done: ${annotations.length} feature(s) detected`);
+                }
+            } catch (e) {
+                log(`Phase 3 skipped: ${e.message}`);
+            }
+
+            // ── Phase 4: Deterministic feature piercing ──────────
+            log('Phase 4: Piercing features...');
+            cells = engine.pierceFeatures(cells, annotations);
+            state.rootCells = cells;
+            log('Phase 4 done');
         }
 
-        state.gridInfo  = gridInfo;
-        state.rootCells = cells;
-        state.cropInfo  = gridInfo.crop || { x: 0, y: 0, w: 1, h: 1 };
-
-        layerRenderer.render(state.rootCells, gridInfo.gridX, gridInfo.gridZ);
-        layerRenderer.focusScene();
-
-        floorTex.dispose();
-        await floorTex.init(
-            layerRenderer.scene,
-            state.imageDataUrl,
-            state.cropInfo,
-            gridInfo.gridX,
-            gridInfo.gridZ,
-            CELL_SIZE
-        );
-        floorTex.setOpacity(Number(floorOpacity.value));
+        layerRenderer.render(state.rootCells, state.gridInfo.gridX, state.gridInfo.gridZ);
+        if (MOCK) {
+            layerRenderer.focusScene();
+            floorTex.dispose();
+            await floorTex.init(
+                layerRenderer.scene, state.imageDataUrl, state.cropInfo,
+                state.gridInfo.gridX, state.gridInfo.gridZ, CELL_SIZE
+            );
+            floorTex.setOpacity(Number(floorOpacity.value));
+        }
 
         depthLegend.style.display = 'flex';
         phase5Btn.classList.add('visible');
@@ -237,10 +529,12 @@ async function runReconstruct() {
         exportBtn.style.display = 'inline-block';
         viewBtn.style.display   = 'inline-block';
 
-        toast(`✓ Reconstruction complete: ${gridInfo.gridX}×${gridInfo.gridZ} grid, ${cells.length} cells`, 'success');
+        log(`✓ Reconstruction complete`, 'success');
+        toast(`✓ ${state.gridInfo.gridX}×${state.gridInfo.gridZ} grid, ${state.rootCells.length} cells`, 'success');
 
     } catch (err) {
         console.error(err);
+        log(`✗ ${err.message}`, 'error');
         toast(`Reconstruction failed: ${err.message}`, 'error');
     } finally {
         setAnalyzing(false);
@@ -255,31 +549,38 @@ async function runPhase5Loop(maxIterations = 3) {
     if (!MOCK && !state.engine) { toast('Run initial analysis first', 'error'); return; }
 
     phase5Btn.disabled = true;
-    toast('Phase 5: starting top-view regression...', 'info');
+    log('─── Phase 5: top-view regression ───', 'phase');
 
     try {
         for (let iter = 0; iter < maxIterations; iter++) {
+            log(`Round ${iter + 1}: rendering top view & comparing...`, 'running');
             const topView  = layerRenderer.renderTopView();
             const divergent = await regressionEng.compareWithSource(
                 topView, state.imageDataUrl, state.cropInfo, state.gridInfo
             );
 
             if (divergent.length === 0) {
+                log(`✓ Converged after ${iter + 1} round(s)`, 'success');
                 toast(`Phase 5: converged after ${iter + 1} round(s).`, 'success');
                 break;
             }
 
+            log(`${divergent.length} divergent cells — refining...`, 'running');
             toast(`Phase 5 round ${iter + 1}: ${divergent.length} divergent cells — refining...`);
 
             const regions = regressionEng.groupDivergentRegions(divergent, state.rootCells, state.gridInfo);
-            for (const region of regions) {
+            log(`Grouped into ${regions.length} region(s)`);
+            for (const [i, region] of regions.entries()) {
+                log(`  Region ${i + 1}/${regions.length}: ${region.cells.length} cells`, 'running');
                 await refineRegion(region.cells, region.parentLayout);
+                log(`  Region ${i + 1} done`, 'success');
             }
 
             layerRenderer.render(state.rootCells, state.gridInfo.gridX, state.gridInfo.gridZ);
         }
     } catch (err) {
         console.error(err);
+        log(`✗ Phase 5 failed: ${err.message}`, 'error');
         toast(`Phase 5 failed: ${err.message}`, 'error');
     } finally {
         phase5Btn.disabled = false;
@@ -298,14 +599,17 @@ async function refineSelected() {
         return;
     }
 
+    log('─── Manual refinement ───', 'phase');
     toast('Manual refinement: running local Phase 1-4...', 'info');
     try {
         const parentLayout = buildParentLayout(rootCells);
         await refineRegion(rootCells, parentLayout);
         layerRenderer.render(state.rootCells, state.gridInfo.gridX, state.gridInfo.gridZ);
         selectionMgr.clear();
+        log('✓ Manual refinement complete', 'success');
         toast('Manual refinement complete', 'success');
     } catch (err) {
+        log(`✗ ${err.message}`, 'error');
         toast(`Refinement failed: ${err.message}`, 'error');
     }
 }
@@ -314,26 +618,43 @@ async function refineSelected() {
 async function refineRegion(selectedCells, parentLayout) {
     const maxCurrentDepth = Math.max(...selectedCells.map(c => c._depth || 0));
     if (maxCurrentDepth >= MAX_DEPTH) {
+        log(`Max depth (${MAX_DEPTH}) reached — skipping`);
         toast(`Max refinement depth (${MAX_DEPTH}) reached — skipping.`);
         return;
     }
 
     const constraints = regressionEng.extractConstraints(selectedCells);
+    log(`Cropping region (${selectedCells.length} cells)...`, 'running');
     const cropImage   = await regressionEng.cropToCells(
         state.imageDataUrl, state.cropInfo, state.gridInfo, selectedCells
     );
 
     let aiOutput;
     if (MOCK) {
+        log('Building mock sub-grid...');
         aiOutput = buildMockSubGrid(selectedCells, 3);
     } else {
+        log('Local Phase 1: sub-grid layout (AI)...', 'running');
         const localGridInfo = await state.engine.analyzeGridSize(cropImage, { constraints, parentLayout });
-        const localResult   = await state.engine.classifyFaces(cropImage, localGridInfo);
+        log(`Local grid: ${localGridInfo.gridX}×${localGridInfo.gridZ} (scale=${localGridInfo.scale || '?'})`);
+
+        log('Local Phase 2: generating walls from layout...');
+        const localCells = generateCellsFromLayout(
+            localGridInfo.layout, localGridInfo.gridX, localGridInfo.gridZ, []
+        );
+        log(`Local Phase 2 done: ${localCells.length} sub-cells`);
+
+        log('Local Phase 3: detecting doors/windows (AI)...', 'running');
         let localAnn = [];
         try {
-            localAnn = await state.engine.detectFeatures(cropImage, localResult.cells, localGridInfo);
-        } catch { /* non-blocking — proceed without door annotations */ }
-        const localFinal = state.engine.pierceFeatures(localResult.cells, localAnn);
+            localAnn = await state.engine.detectFeatures(cropImage, localCells, localGridInfo);
+            log(`Found ${localAnn.length} feature annotation(s)`);
+        } catch (e) {
+            log(`Local Phase 3 skipped: ${e.message}`);
+        }
+
+        log('Local Phase 4: piercing features...');
+        const localFinal = state.engine.pierceFeatures(localCells, localAnn);
 
         aiOutput = {
             scale: localGridInfo.scale || 3,
@@ -344,6 +665,7 @@ async function refineRegion(selectedCells, parentLayout) {
     }
 
     RecursiveGridManager.integratePerCellRefinement(selectedCells, aiOutput);
+    log(`Integrated ${aiOutput.cells.length} sub-cells`);
 }
 
 // ─── Delete refinement ────────────────────────────────────────
@@ -373,13 +695,76 @@ function deleteRefinement() {
     }
 }
 
+// ─── Connectivity analysis ────────────────────────────────────
+
+/**
+ * BFS flood-fill through OPEN (optionId=0) faces to find connected room islands.
+ * Face layout in faceOptions: [+X, -X, +Y, -Y, z-1, z+1]
+ * Returns Map<cell, componentId>.
+ */
+function computeRoomComponents(leafCells) {
+    // Build position lookup (rounded to avoid float key issues)
+    const byPos = new Map();
+    for (const cell of leafCells) {
+        const [x, , z] = cell.position;
+        byPos.set(`${Math.round(x * 100)},${Math.round(z * 100)}`, cell);
+    }
+
+    // [myFaceIdx, dx, dz] — matches faceOptions after the POS_Z/NEG_Z fix
+    const DIRS = [
+        [0,  1,  0],   // faceOptions[0]: POS_X → neighbor at x+1
+        [1, -1,  0],   // faceOptions[1]: NEG_X → neighbor at x-1
+        [4,  0,  1],   // faceOptions[4]: POS_Z → neighbor at z+1
+        [5,  0, -1],   // faceOptions[5]: NEG_Z → neighbor at z-1
+    ];
+
+    const componentId = new Map();
+    let nextId = 0;
+
+    for (const startCell of leafCells) {
+        if (componentId.has(startCell)) continue;
+        const id = nextId++;
+        const queue = [startCell];
+        componentId.set(startCell, id);
+
+        while (queue.length) {
+            const cell = queue.shift();
+            const [cx, , cz] = cell.position;
+
+            for (const [myFace, dx, dz] of DIRS) {
+                const optId = cell.faceOptions?.[myFace]?.[0];
+                if (optId !== 0) continue;  // only OPEN faces (same room)
+
+                const nk = `${Math.round((cx + dx) * 100)},${Math.round((cz + dz) * 100)}`;
+                const neighbor = byPos.get(nk);
+                if (!neighbor || componentId.has(neighbor)) continue;
+                componentId.set(neighbor, id);
+                queue.push(neighbor);
+            }
+        }
+    }
+
+    return componentId;
+}
+
 // ─── Selection change callback ────────────────────────────────
 
 function onSelectionChange(selectedCells) {
     const count = selectedCells.size;
     selectedCount.textContent = count;
     actionBar.classList.toggle('hidden', count === 0);
-    layerRenderer.highlightSelection(selectedCells);
+
+    if (count > 0 && state.rootCells.length > 0) {
+        // Show connectivity: color all leaf cells by connected-room component
+        const leafCells = RecursiveGridManager.flattenRecursiveCells(
+            state.rootCells, [0, 0, 0], CELL_SIZE
+        );
+        const componentMap = computeRoomComponents(leafCells);
+        layerRenderer.highlightComponents(componentMap, selectedCells);
+    } else {
+        // Restore normal depth-based colors
+        layerRenderer.highlightSelection(selectedCells);
+    }
 }
 
 // ─── Keyboard shortcuts ───────────────────────────────────────
@@ -387,6 +772,7 @@ function onSelectionChange(selectedCells) {
 function onKeyDown(e) {
     if (e.target.tagName === 'INPUT') return;
     switch (e.key.toUpperCase()) {
+        case 'S': toggleSelectMode(); break;
         case 'T': layerRenderer.toggleTopView(); break;
         case 'E': exportJSON(); break;
         case 'V': viewJSON(); break;
@@ -448,12 +834,137 @@ function syntaxHighlight(json) {
         );
 }
 
+// ─── Select mode toggle ───────────────────────────────────────
+
+function toggleSelectMode() {
+    const on = !selectionMgr.selectMode;
+    selectionMgr.selectMode = on;
+    layerRenderer.setSelectMode(on);
+    selectBtn.classList.toggle('active', on);
+    selectBtn.title = on ? 'Select mode ON — left-drag to paint, click to toggle  (S)' : 'Enter select mode  (S)';
+}
+
 // ─── Helpers ──────────────────────────────────────────────────
 
 function setAnalyzing(on) {
     analyzeBtn.disabled = on;
     analyzeBtn.textContent = on ? 'Analyzing...' : '▶ Analyze';
     analyzeBtn.classList.toggle('spinner', on);
+    if (on) {
+        logPanel.classList.add('open');
+        logBtn.classList.add('active');
+    }
+}
+
+let _runningEntryEl = null;
+function log(msg, type = 'info') {
+    // Always clear the previous running spinner — even if the new entry is also 'running'
+    if (_runningEntryEl) {
+        _runningEntryEl.classList.remove('log-running');
+        _runningEntryEl = null;
+    }
+    const now = new Date().toLocaleTimeString('en', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const el = document.createElement('div');
+    el.className = `log-entry log-${type}`;
+    el.innerHTML = `<span class="log-time">${now}</span><span class="log-msg">${msg}</span>`;
+    logEntries.appendChild(el);
+    logEntries.scrollTop = logEntries.scrollHeight;
+    if (type === 'running') _runningEntryEl = el;
+}
+
+// ─── Tab switching ────────────────────────────────────────────
+
+let _activeTab = 'log';
+function switchTab(tab) {
+    _activeTab = tab;
+    tabLog.classList.toggle('active', tab === 'log');
+    tabInspector.classList.toggle('active', tab === 'inspector');
+    logContent.classList.toggle('active', tab === 'log');
+    inspectorContent.classList.toggle('active', tab === 'inspector');
+    if (tab === 'inspector') tabInspector.textContent = 'Inspector';
+}
+
+// ─── Inspector: cell info ─────────────────────────────────────
+
+function updateInspectorCell(cell) {
+    const OPT = { 0: ['open','open'], 1: ['arch','arch'], 2: ['door','door'],
+                  10: ['wall','wall'], 20: ['win','win'] };
+    // 0=POS_X(right col), 1=NEG_X(left col), 4=POS_Z(next row down), 5=NEG_Z(prev row up)
+    const FACES = [[0,'→R'],[1,'←L'],[4,'↓B'],[5,'↑T']];
+    const [px, , pz] = cell.position;
+    const facesHtml = FACES.map(([idx, lbl]) => {
+        const optId = cell.faceOptions?.[idx]?.[0];
+        const [cls, name] = OPT[optId] ?? ['', optId === undefined ? '?' : `#${optId}`];
+        return `<span>${lbl}: <b class="${cls}">${name}</b></span>`;
+    }).join('');
+    inspCell.innerHTML =
+        `<div class="insp-room">${cell.room || '<i>null</i>'}</div>` +
+        `<div class="insp-pos">col ${px}  row ${pz} · depth ${cell._depth || 0}</div>` +
+        `<div class="insp-faces">${facesHtml}</div>`;
+}
+
+// ─── Inspector: AI call records ───────────────────────────────
+
+let _aiCallCount = 0;
+function addAiCallRecord(label, systemPrompt, userText, response, durationMs) {
+    _aiCallCount++;
+    // Remove placeholder
+    const placeholder = aiCallsList.querySelector('.insp-placeholder');
+    if (placeholder) placeholder.remove();
+
+    const sec = (durationMs / 1000).toFixed(1);
+    const el = document.createElement('div');
+    el.className = 'ai-call';
+    el.innerHTML =
+        `<div class="ai-call-header">` +
+            `<span class="ai-call-label">#${_aiCallCount} ${label}</span>` +
+            `<span><span class="ai-call-meta">${sec}s</span> <span class="ai-call-arrow">▶</span></span>` +
+        `</div>` +
+        `<div class="ai-call-body">` +
+            `<div class="ai-section-label">System Prompt</div>` +
+            `<pre class="ai-text">${escHtml(systemPrompt)}</pre>` +
+            `<div class="ai-section-label">User Message</div>` +
+            `<pre class="ai-text">${escHtml(userText)}</pre>` +
+            `<div class="ai-section-label">Response</div>` +
+            `<pre class="ai-text">${escHtml(response)}</pre>` +
+        `</div>`;
+
+    el.querySelector('.ai-call-header').addEventListener('click', () => {
+        el.classList.toggle('open');
+    });
+
+    aiCallsList.appendChild(el);
+    aiCallsList.scrollTop = aiCallsList.scrollHeight;
+
+    // Auto-switch to inspector tab so user sees the new record
+    if (_activeTab !== 'inspector') {
+        // Just badge the tab instead of forcing a switch
+        tabInspector.textContent = `Inspector (${_aiCallCount})`;
+    }
+}
+
+function escHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+/** Format cell debug info for the hover tooltip bubble */
+function formatCellTooltip(cell) {
+    const OPT = { 0: ['open', 'open'], 1: ['arch', 'arch'], 2: ['door', 'door'],
+                  10: ['wall', 'wall'], 20: ['win', 'win'] };
+    // faceOptions: 0=POS_X(→right col), 1=NEG_X(←left col), 4=POS_Z(↓next row), 5=NEG_Z(↑prev row)
+    const FACES = [
+        [0, '→R'], [1, '←L'], [4, '↓B'], [5, '↑T'],
+    ];
+    const [px, , pz] = cell.position;
+    const faceHtml = FACES.map(([idx, label]) => {
+        const optId = cell.faceOptions?.[idx]?.[0];
+        const [cls, name] = OPT[optId] ?? ['', optId === undefined ? '?' : `#${optId}`];
+        return `<span class="tt-face">${label}: <b class="${cls}">${name}</b></span>`;
+    }).join('');
+    return `<div class="tt-room">${cell.room || '<i>null</i>'}</div>` +
+           `<div class="tt-pos">col ${px}  row ${pz}  depth ${cell._depth || 0}</div>` +
+           `<div class="tt-faces">${faceHtml}</div>`;
 }
 
 function buildParentLayout(cells) {

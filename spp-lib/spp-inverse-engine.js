@@ -119,12 +119,12 @@ export function generateCellsFromLayout(layout, gridX, gridZ, doors) {
                 faceStates: 63,     // 0b111111 (all faces active)
                 room,
                 faceOptions: [
-                    faceValue(x, z, x + 1, z),  // +X
-                    faceValue(x, z, x - 1, z),  // -X
-                    [],                           // +Y
-                    [],                           // -Y
-                    faceValue(x, z, x, z - 1),  // +Z
-                    faceValue(x, z, x, z + 1),  // -Z
+                    faceValue(x, z, x + 1, z),  // index 0: POS_X → neighbor at x+1
+                    faceValue(x, z, x - 1, z),  // index 1: NEG_X → neighbor at x-1
+                    [],                           // index 2: POS_Y (unused)
+                    [],                           // index 3: NEG_Y (unused)
+                    faceValue(x, z, x, z + 1),  // index 4: POS_Z → neighbor at z+1
+                    faceValue(x, z, x, z - 1),  // index 5: NEG_Z → neighbor at z-1
                 ],
             });
         }
@@ -220,6 +220,7 @@ export function optimizeGrid(baseLayout, scale, cellModifications, baseDoors) {
 // Part 2: Prompt Templates (from prompt.js)
 // ═════════════════════════════════════════════════════════════
 
+// Legacy global prompt (kept for backward-compat; reconstruct() now uses STEP1_LAYOUT_PROMPT)
 const STEP1_PROMPT = `You are a spatial layout analyzer. Given a floor plan image, first locate the floor plan boundary, then overlay a fine-grained grid that preserves room proportions.
 
 ## Task
@@ -276,6 +277,61 @@ Example:
     ["Living Room", "Living Room", "Hallway", "Bedroom", "Bedroom"]
   ]
 }`;
+
+/**
+ * Step 1a — Room listing only.
+ * Single focused task: just identify what rooms exist. No grid, no coordinates.
+ */
+const STEP1A_ROOMS_PROMPT = `You are analyzing a floor plan image.
+
+Carefully look at every labeled or implied enclosed space in the floor plan.
+List ALL distinct rooms and spaces you can see (kitchen, bedrooms, bathrooms, hallways, entrance, balcony, storage, etc.).
+
+Return ONLY a JSON array of room name strings. No extra text, no markdown.
+Example: ["Kitchen", "Living Room", "Bedroom", "Bathroom", "Hallway", "Entrance"]
+
+Rules:
+- Include EVERY distinct enclosed area — do not merge or skip any
+- Use standard English names
+- If there are multiple bedrooms, name them "Bedroom 1", "Bedroom 2", etc.
+- Do NOT include null, exterior, or outside areas`;
+
+/**
+ * Step 1c — Grid filling with fixed dimensions (AI task is filling only, not sizing).
+ * Placeholders: __GRID_X__, __GRID_Z__, __ROOM_LIST__
+ */
+const STEP1C_GRID_PROMPT = `You are filling a floor plan grid.
+
+The floor plan has been divided into a __GRID_X__ × __GRID_Z__ grid (__GRID_X__ columns, __GRID_Z__ rows).
+Known rooms in this floor plan: __ROOM_LIST__
+
+## Coordinate system
+- Row 0 = TOP of the floor plan image; last row = BOTTOM.
+- Column 0 = LEFT side of the floor plan image; last column = RIGHT.
+- layout[row][col]: row increases downward, col increases rightward.
+- A room on the LEFT side of the image must occupy columns 0, 1, 2 … (low col index).
+- A room on the RIGHT side of the image must occupy columns __GRID_X_LAST__, … (high col index).
+- A room at the TOP of the image must occupy rows 0, 1, 2 … (low row index).
+- A room at the BOTTOM must occupy high row indices.
+
+## Your task
+Assign each grid cell a room name from the list above so the grid accurately represents the floor plan layout.
+
+## Rules
+1. Output EXACTLY __GRID_Z__ rows, each with EXACTLY __GRID_X__ elements.
+2. Each cell must be one of the room names listed above, OR null if it is clearly outside the outer walls.
+3. Each room must form a single contiguous rectangular block — no L-shapes, no diagonal assignments.
+4. Larger rooms occupy more cells; smaller rooms occupy fewer — preserve real proportions.
+5. CRITICAL: No row may be entirely null. No column may be entirely null. The grid must be tight to the floor plan boundary.
+6. Every room from the list must appear at least once.
+
+## Output
+Return ONLY a JSON 2D array. No explanations, no markdown fences.
+[
+  ["RoomName", "RoomName", ...],   ← row 0 = TOP of floor plan; element 0 = LEFT, element __GRID_X_LAST__ = RIGHT
+  ["RoomName", "RoomName", ...],   ← row 1
+  ...                               ← __GRID_Z__ rows total
+]`;
 
 const STEP2_PROMPT = `You are an SPP (String Particle Protocol) spatial analyzer. Given a floor plan image and a fine-grained grid layout, classify each cell's face connections.
 
@@ -347,6 +403,11 @@ Return ONLY a JSON object (no crop field needed — the crop is already done):
 
 const STEP3_PROMPT = `You are an SPP feature detector. Given a floor plan image and an existing binary wall topology, identify all doors and windows.
 
+## Coordinate system
+- x = column index, 0 = LEFT side of image, increases rightward.
+- z = row index, 0 = TOP of image, increases downward.
+- Cell (x=0, z=0) is the top-left corner of the floor plan.
+
 ## Current Grid Topology
 GRID_X: __GRID_X__
 GRID_Z: __GRID_Z__
@@ -356,10 +417,10 @@ __WALL_FACES__
 ## Task
 For each door or window visible in the floor plan image:
 1. Identify which cell (x, z) and which face index it is on:
-   - face 0 = +X (right edge of cell)
-   - face 1 = -X (left edge of cell)
-   - face 4 = +Z (front edge, lower row boundary)
-   - face 5 = -Z (back edge, upper row boundary)
+   - face 0 = +X (right edge of cell, toward larger x / right side of image)
+   - face 1 = -X (left edge of cell, toward smaller x / left side of image)
+   - face 4 = +Z (bottom edge of cell, toward larger z / lower row in image)
+   - face 5 = -Z (top edge of cell, toward smaller z / upper row in image)
 2. Assign the appropriate Option ID:
    - 1: Arch Door (arched opening)
    - 2: Rectangular Door (standard door, most common)
@@ -679,10 +740,10 @@ export class RecursiveGridManager {
         // face 4 (+Z) → top edge (cells at z=minZ, neighbor z-1 outside per FACE_NEIGHBOR)
         // face 5 (-Z) → bottom edge (cells at z=maxZ, neighbor z+1 outside)
         const EDGE_FACE = {
-            left:   { faceIdx: 1, test: c => c.position[0] === minX },
-            right:  { faceIdx: 0, test: c => c.position[0] === maxX },
-            top:    { faceIdx: 4, test: c => c.position[2] === minZ },
-            bottom: { faceIdx: 5, test: c => c.position[2] === maxZ },
+            left:   { faceIdx: 1, test: c => c.position[0] === minX },  // NEG_X
+            right:  { faceIdx: 0, test: c => c.position[0] === maxX },  // POS_X
+            top:    { faceIdx: 5, test: c => c.position[2] === minZ },  // NEG_Z (z-1 = above)
+            bottom: { faceIdx: 4, test: c => c.position[2] === maxZ },  // POS_Z (z+1 = below)
         };
 
         const constraints = {};
@@ -705,6 +766,35 @@ export class RecursiveGridManager {
                 `Boundary connectivity: ${JSON.stringify(constraints)}.`,
         };
     }
+}
+
+// ─── Phase 1 helpers ─────────────────────────────────────────
+
+/** Parse AI room-list response into a clean string array. */
+function parseRoomList(text) {
+    try {
+        const cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+        const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
+        if (s === -1 || e === -1) throw new Error('no array');
+        const arr = JSON.parse(cleaned.substring(s, e + 1));
+        if (Array.isArray(arr) && arr.length > 0 && arr.every(r => typeof r === 'string')) {
+            return arr.filter(r => r.trim().length > 0);
+        }
+    } catch {}
+    return ['Living Room', 'Kitchen', 'Bedroom', 'Bathroom', 'Hallway'];
+}
+
+/**
+ * Compute a good grid size from the image aspect ratio and room count.
+ * Targets ~10 cells per room; longer dimension ≈ 8–12 cells.
+ */
+function computeGridDimensions(aspectRatio, roomCount) {
+    const targetCells = Math.max(48, roomCount * 10);
+    let gridZ = Math.round(Math.sqrt(targetCells / Math.max(0.5, aspectRatio)));
+    let gridX = Math.round(gridZ * Math.max(0.5, aspectRatio));
+    gridX = Math.max(5, Math.min(14, gridX));
+    gridZ = Math.max(4, Math.min(12, gridZ));
+    return { gridX, gridZ };
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -817,6 +907,64 @@ export class SPPInverseEngine {
     }
 
     /**
+     * 3-step layout analysis — use when the image has already been pre-cropped.
+     *
+     * Step 1a (AI)  : identify room names only (focused, single task)
+     * Step 1b (code): compute grid dimensions from aspect ratio + room count
+     * Step 1c (AI)  : fill the grid using the computed fixed dimensions
+     *
+     * @param {string} croppedImageDataUrl
+     * @param {number} [aspectRatio=1.0] - width/height of the cropped floor plan
+     * @returns {Object} { gridX, gridZ, layout }
+     */
+    async analyzeLayoutOnly(croppedImageDataUrl, aspectRatio = 1.0) {
+        // ── Step 1a: identify rooms ──────────────────────────────────
+        this.onStatus('Step 1a: Identifying rooms...');
+        const roomsText = await this.llmProvider(
+            croppedImageDataUrl,
+            STEP1A_ROOMS_PROMPT,
+            'List all rooms visible in this floor plan. Return ONLY the JSON array.'
+        );
+        const rooms = parseRoomList(roomsText);
+        this.onStatus(`Step 1a done: ${rooms.length} rooms — ${rooms.join(', ')}`);
+
+        // ── Step 1b: compute grid size (deterministic) ────────────────
+        const { gridX, gridZ } = computeGridDimensions(aspectRatio, rooms.length);
+        this.onStatus(`Grid size computed: ${gridX}×${gridZ} (aspect=${aspectRatio.toFixed(2)}, rooms=${rooms.length})`);
+
+        // ── Step 1c: fill the grid ───────────────────────────────────
+        this.onStatus('Step 1c: Filling room grid...');
+        const gridPrompt = STEP1C_GRID_PROMPT
+            .replace(/__GRID_X_LAST__/g, String(gridX - 1))
+            .replace(/__GRID_X__/g, String(gridX))
+            .replace(/__GRID_Z__/g, String(gridZ))
+            .replace('__ROOM_LIST__', rooms.map(r => `"${r}"`).join(', '));
+
+        const gridText = await this.llmProvider(
+            croppedImageDataUrl,
+            gridPrompt,
+            `Fill the ${gridX}×${gridZ} grid with room names. Return ONLY the JSON 2D array.`
+        );
+
+        let layout;
+        try {
+            const cleaned = gridText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+            const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
+            if (s === -1 || e === -1) throw new Error('no array found');
+            layout = JSON.parse(cleaned.substring(s, e + 1));
+        } catch (err) {
+            throw new Error(`Step 1c failed to parse: ${err.message}\nRaw: ${gridText.slice(0, 300)}`);
+        }
+
+        if (!Array.isArray(layout) || layout.length === 0) {
+            throw new Error('Step 1c returned empty or invalid layout');
+        }
+
+        this.onStatus(`Step 1 done: ${gridX}×${gridZ} grid.`);
+        return { gridX, gridZ, layout };
+    }
+
+    /**
      * Step 2: Classify each cell's faces based on the grid layout from Step 1.
      *
      * @param {string} imageDataUrl - Base64 data URL of the floor plan image
@@ -859,9 +1007,11 @@ export class SPPInverseEngine {
         // Phase 1: Detect crop bounds + fine-grained grid + semantic room names
         const gridInfo = await this.analyzeGridSize(imageDataUrl);
 
-        // Phase 2: Binary topology (Wall / Open only — no doors/windows yet)
-        const classification = await this.classifyFaces(imageDataUrl, gridInfo);
-        const { cells } = classification;
+        // Phase 2: Deterministic wall topology from layout (no AI needed —
+        // wall/open classification is fully determined by room adjacency in the layout)
+        this.onStatus('Step 2/3: Generating wall topology from layout...');
+        const cells = generateCellsFromLayout(gridInfo.layout, gridInfo.gridX, gridInfo.gridZ, []);
+        this.onStatus(`Step 2 done: ${cells.length} cells generated.`);
 
         // Phase 3: AI detects door & window positions from the floor plan image
         let annotations = [];
@@ -879,7 +1029,7 @@ export class SPPInverseEngine {
         return {
             gridInfo,
             cells: finalCells,
-            description: classification.description,
+            description: '',
             gridX: gridInfo.gridX,
             gridZ: gridInfo.gridZ,
         };
@@ -936,6 +1086,7 @@ export class SPPInverseEngine {
      * Phase 4: Feature Piercing (deterministic)
      * Writes door/window option IDs into the cells' faceOptions.
      * Only replaces faces currently set to Wall (id=10) — never touches Open faces.
+     * Never pierces exterior walls (faces where the neighboring cell is outside the grid).
      *
      * @param {Array} cells - cells from Phase 2
      * @param {Array} annotations - [{ x, z, face, optionId }, ...] from Phase 3
@@ -948,11 +1099,27 @@ export class SPPInverseEngine {
             cells.map(c => [`${c.position[0]},${c.position[2]}`, c])
         );
 
+        // Direction each face index points toward the neighbor cell
+        const FACE_NEIGHBOR_DIR = { 0: [1,0], 1: [-1,0], 4: [0,1], 5: [0,-1] };
+
+        // Sanity limit: if annotations exceed 2× the number of cells, Phase 3 is noise — skip
+        const MAX_ANNOTATIONS = Math.max(8, cells.length * 2);
+        if (annotations.length > MAX_ANNOTATIONS) {
+            console.warn(`pierceFeatures: ${annotations.length} annotations for ${cells.length} cells — too many, skipping Phase 3`);
+            return cells;
+        }
+
         for (const ann of annotations) {
             const cell = cellMap.get(`${ann.x},${ann.z}`);
             if (!cell) continue;
             if (ann.face < 0 || ann.face > 5) continue;
             const currentId = cell.faceOptions[ann.face]?.[0];
+            // Only pierce interior walls — skip if face leads outside the grid
+            const dir = FACE_NEIGHBOR_DIR[ann.face];
+            if (dir) {
+                const neighborKey = `${ann.x + dir[0]},${ann.z + dir[1]}`;
+                if (!cellMap.has(neighborKey)) continue; // exterior face — never pierce
+            }
             // Only pierce walls — never overwrite Open connections
             if (currentId === 10) {
                 cell.faceOptions[ann.face] = [ann.optionId];
