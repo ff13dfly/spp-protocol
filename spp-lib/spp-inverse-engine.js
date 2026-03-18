@@ -284,14 +284,14 @@ Example:
  */
 const STEP1A_ROOMS_PROMPT = `You are analyzing a floor plan image.
 
-Carefully look at every labeled or implied enclosed space in the floor plan.
-List ALL distinct rooms and spaces you can see (kitchen, bedrooms, bathrooms, hallways, entrance, balcony, storage, etc.).
+List every clearly enclosed room or functional space that has its own surrounding walls.
 
 Return ONLY a JSON array of room name strings. No extra text, no markdown.
-Example: ["Kitchen", "Living Room", "Bedroom", "Bathroom", "Hallway", "Entrance"]
+Example: ["Kitchen", "Living Room", "Bedroom", "Bathroom", "Hallway"]
 
 Rules:
-- Include EVERY distinct enclosed area — do not merge or skip any
+- Only include spaces that are clearly enclosed by walls on the floor plan
+- Do NOT list "Entrance", "Entry", "Foyer", or "Corridor" unless it is a large, clearly labeled dedicated room with its own four walls — small transitional areas near the front door are part of the hallway
 - Use standard English names
 - If there are multiple bedrooms, name them "Bedroom 1", "Bedroom 2", etc.
 - Do NOT include null, exterior, or outside areas`;
@@ -400,6 +400,29 @@ Return ONLY a JSON object (no crop field needed — the crop is already done):
     ...
   ]
 }`;
+
+const STEP0_DOOR_PROMPT = `You are analyzing an architectural floor plan image.
+
+Detect ALL door symbols visible in the image. Door symbols appear as:
+- An arc (quarter-circle) showing the door's swing path
+- A straight line at the base of the arc (the door leaf)
+- Together they indicate a door opening cut into a wall
+
+For each door, return its position as normalized coordinates (0.0–1.0 relative to the FULL image size).
+
+Return ONLY a JSON array — no markdown, no explanation:
+[
+  { "cx": 0.45, "cy": 0.32, "width": 0.05, "angle": 90 },
+  ...
+]
+
+Where:
+- cx, cy : center of the door opening (normalized 0–1 relative to full image)
+- width  : door opening width as a fraction of image width (typically 0.03–0.10)
+- angle  : 0 = door is in a HORIZONTAL wall (wall runs left-right),
+           90 = door is in a VERTICAL wall (wall runs up-down)
+
+Return [] if no door symbols are visible.`;
 
 const STEP3_PROMPT = `You are an SPP feature detector. Given a floor plan image and an existing binary wall topology, identify all doors and windows.
 
@@ -768,6 +791,42 @@ export class RecursiveGridManager {
     }
 }
 
+// ─── Structural complexity scanner ───────────────────────────
+
+/**
+ * Scan cells for structural complexity.
+ * Returns cells that should be recursively refined:
+ *   - borders 2+ different rooms (multi-room junction)
+ *   - is the only cell representing its room (too coarse)
+ *
+ * @param {Array} cells - ParticleCell array (from generateCellsFromLayout)
+ * @param {Array} layout - 2D room-name array (layout[z][x])
+ * @returns {Array} subset of cells that need refinement
+ */
+export function scanComplexCells(cells, layout) {
+    const FACE_DIRS = [[1, 0], [-1, 0], null, null, [0, 1], [0, -1]];
+
+    const roomCount = new Map();
+    for (const c of cells) {
+        if (c.room) roomCount.set(c.room, (roomCount.get(c.room) || 0) + 1);
+    }
+
+    return cells.filter(cell => {
+        if (!cell.room) return false;
+        const [x, , z] = cell.position;
+
+        const neighborRooms = new Set();
+        for (let fi = 0; fi < 6; fi++) {
+            const dir = FACE_DIRS[fi];
+            if (!dir) continue;
+            const nRoom = layout[z + dir[1]]?.[x + dir[0]];
+            if (nRoom && nRoom !== cell.room) neighborRooms.add(nRoom);
+        }
+
+        return neighborRooms.size >= 2 || roomCount.get(cell.room) === 1;
+    });
+}
+
 // ─── Phase 1 helpers ─────────────────────────────────────────
 
 /** Parse AI room-list response into a clean string array. */
@@ -1045,6 +1104,33 @@ export class SPPInverseEngine {
      * @param {Object} gridInfo - { gridX, gridZ }
      * @returns {Array} annotations: [{ x, z, face, optionId }, ...]
      */
+    /**
+     * Step 0: Door Symbol Detection
+     * First AI call in the new pipeline — scans the raw floor plan image for
+     * door arc symbols BEFORE room layout analysis, so the layout sees clean walls.
+     *
+     * @param {string} imageDataUrl - full (un-cropped) floor plan image
+     * @returns {Array} [{ cx, cy, width, angle }, ...] — normalized pixel coords
+     */
+    async detectDoorSymbols(imageDataUrl) {
+        this.onStatus('Step 0: Detecting door symbols...');
+        const text = await this.llmProvider(
+            imageDataUrl,
+            STEP0_DOOR_PROMPT,
+            'Detect all door symbols in this floor plan. Return ONLY the JSON array.'
+        );
+        let doors = [];
+        try {
+            const cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+            const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
+            if (s !== -1 && e !== -1) doors = JSON.parse(cleaned.substring(s, e + 1));
+        } catch (err) {
+            console.warn('Step 0 parse error:', err.message);
+        }
+        this.onStatus(`Step 0 done: ${doors.length} door symbol(s) detected.`);
+        return doors;
+    }
+
     async detectFeatures(imageDataUrl, cells, gridInfo) {
         this.onStatus('Step 3/3: Detecting doors and windows...');
 

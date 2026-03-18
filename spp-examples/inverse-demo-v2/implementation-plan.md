@@ -505,7 +505,246 @@ Optional second parameter for local Phase 5 calls. When `localContext = { constr
 
 ---
 
-## 11. Confirmed Design Decisions
+## 11. Implementation Issues & Optimization (2026-03-18)
+
+### 11.1 Problems Encountered
+
+#### 问题 1：Phase 1 提示词产生幻觉房间
+
+**现象：** Qwen qwen-vl-max 在 Step 1A 中频繁将门厅/入户区识别为独立的 "Entrance" 房间，导致布局多出一列，所有其他房间被整体压缩偏移。
+
+**原因：** 原提示词示例中包含 `"Entrance"`，且描述中写了 `"entrance, balcony, storage, etc."`，模型倾向于把门道区域单独列出。
+
+**已修复：** 移除示例中的 `Entrance`，新增规则：
+> Only include spaces that are clearly enclosed by walls. Do NOT list "Entrance", "Entry", "Foyer" unless it is a large, clearly labeled dedicated room — small transitional areas near the front door are part of the hallway.
+
+---
+
+#### 问题 2：Phase 5 像素 diff 失效
+
+**现象：** Phase 5 top-view regression 无法识别出需要优化的 cell，或将全部 cell 标为发散。
+
+**根本原因有两层：**
+
+1. **Crop 坐标不准确**
+   Phase 5 的 `compareWithSource()` 用 `cropInfo` 从原图裁出平面图区域，再与渲染俯视图做像素 diff。若 AI 返回的 `crop` 坐标偏移，裁出来的区域就和实际平面图对不上，导致全图 diff 失真。
+
+2. **渲染风格与原图不匹配**
+   渲染俯视图是带颜色的 3D 模型截图（砖红色墙体 + 灰色地板），原图是黑白线条平面图，两者风格根本不同。像素级 diff 在这两类图像之间缺乏可靠意义——颜色差异不等于结构差异。
+
+**结论：** 以像素 diff 作为递归触发器，在实际场景中过于脆弱，依赖两个难以同时满足的前提（crop 精准 + 渲染风格接近）。
+
+---
+
+#### 问题 3：Step 3 门窗检测严重过检
+
+**现象：** 在 8×8 网格（64 cells）上，Qwen 返回了 52 个门窗注解，超出合理范围（正常应为 8–15 个）。
+
+**原因：** STEP3_PROMPT 将所有 wall face 的坐标列表完整传给模型，模型在 wall face 数量多时容易对每个 face 都生成一个注解。
+
+**临时处理：** 当前代码已有 sanity check（注解数 > 2× cell 数时整批丢弃），但实际效果是要么全留、要么全丢，不够精细。此问题暂缓，等 Phase 5 重设计后一并处理。
+
+---
+
+### 11.2 Phase 5 优化方案：结构驱动递归（替代像素 diff）
+
+#### 核心思路
+
+将 Phase 5 的触发器从"像素偏差"改为"结构复杂度"。粗网格（Phase 2 输出）中，每个 cell 的 faceOptions 已经包含了它与相邻 cell 的拓扑关系，可以直接判断哪些区域细节不足，无需渲染或图像对比。
+
+递归的机制（裁图 → AI 子网格 → 嵌入）保持不变，只改变触发时机和驱动条件。
+
+#### 触发条件
+
+Phase 2 完成后，对每个 cell 计算结构复杂度分，满足任一条件即标记为"需细化"：
+
+| 条件 | 说明 |
+|------|------|
+| cell 的 4 个面连接了 ≥ 2 种不同房间 | 这里是多房间交界，细节不足 |
+| cell 属于 Hallway 且相邻房间 ≥ 3 种 | 走廊枢纽，门的位置最密集 |
+| 某房间在整个 layout 中只占 1 个 cell | 太粗，无法表达内部结构 |
+
+#### 新执行流程
+
+```
+Phase 1: AI 识别粗粒度 layout（Step 1A → 1B → 1C）
+Phase 2: 确定性生成墙体拓扑（generateCellsFromLayout）
+         ↓
+         扫描所有 cell，按结构复杂度标记需细化的 cell
+         将相邻的待细化 cell 用 BFS 合并成区域
+         ↓
+Phase 3（结构驱动递归）：
+  for each 待细化区域:
+    cropImage = 按 cell 边界从原图裁出该区域
+    constraints = 提取 4 边 Open/Wall 连通性
+    localGridInfo = AI 分析子图（STEP1_LOCAL_PROMPT）
+    localCells = 确定性生成子网格墙体
+    integratePerCellRefinement(region.cells, localGrid)
+    ↓
+    对新生成的子 cell 再次评估结构复杂度
+    满足条件则继续递归，直到 MAX_DEPTH 或无待细化 cell
+         ↓
+Phase 4（原 Step 3）: AI 检测门窗（在最终叶节点层执行）
+Phase 5（原 Phase 4）: 确定性门窗穿刺
+```
+
+#### 与原设计的对比
+
+| | 原 Phase 5（像素 diff） | 新方案（结构驱动） |
+|--|--|--|
+| 触发时机 | Phase 1-4 完成后 | Phase 2 完成后即开始 |
+| 触发条件 | 渲染俯视图 vs 原图像素差 | cell 结构复杂度 |
+| 依赖 crop 精度 | 是（偏移会导致全图误判） | 否（按 cell 边界裁图） |
+| 依赖渲染风格 | 是（3D 图 vs 线条图差异大） | 否 |
+| 细化机制 | 裁图 → AI → 嵌入（不变） | 裁图 → AI → 嵌入（不变） |
+| 门窗检测时机 | 每层递归都调用 | 仅在最终叶节点层调用一次 |
+
+#### 优点
+
+1. **不依赖 crop 精度** — 裁图坐标从 cell 在网格中的相对位置计算，误差不累积到全局
+2. **不依赖渲染** — 完全在数据层判断，无需截图
+3. **更早开始细化** — Phase 2 结束即可驱动，不用等 Phase 1-4 全部跑完再回头
+4. **门窗检测更精准** — 在最细粒度的叶节点层才调用 Step 3，此时区域更小、上下文更清晰
+
+#### 待确认的设计决策
+
+| # | 问题 | 待定 |
+|---|------|------|
+| 1 | 结构复杂度阈值如何标定（几种房间算"复杂"） | 建议先用 ≥2 种邻居房间 |
+| 2 | 每轮最多细化多少个区域（防止 AI 调用爆炸） | 建议首轮限制 ≤ 6 个区域 |
+| 3 | 门窗检测是只在叶节点层还是每层都做 | 建议仅叶节点层 |
+| 4 | 原 Phase 5 像素 diff 是否完全废弃，还是保留为可选的最终校验步骤 | 待定 |
+
+---
+
+## 12. Pipeline Redesign：门符号优先架构（2026-03-18）
+
+### 12.1 问题发现
+
+结构递归细化（§11.2）实施后，发现一个更根本的问题：
+
+**递归细化时 cell 边界可能正好落在门洞上。**
+
+原因：Phase 1 的房间布局识别是在**带门洞的原图**上进行的。门弧/门扇符号在视觉上破坏了墙体的连续性，AI 难以判断"这里是房间边界"还是"通向另一个空间的开口"，导致初始网格划分出现偏差。结构递归再怎么细化，若初始边界就定错了，细化只会把错误放大。
+
+### 12.2 新架构：先符号检测，后拓扑分析
+
+核心思想：**门是独立的视觉符号（弧线/扇形），可以在不知道房间信息的情况下独立检测。** 先把门洞封闭，得到纯净的墙体图，再做布局识别和递归细化，最后把门还原回去。
+
+#### 完整流程
+
+```
+Step 0: 门符号检测（AI）
+  输入: 原始平面图
+  任务: 找出所有门弧/门扇的像素位置和朝向
+  输出: [{ px, py, width, angle }, ...]  — 归一化像素坐标
+
+Step 1: 门洞封闭预处理（确定性）
+  输入: 原图 + Step 0 门位置列表
+  任务: 在门洞区域绘制实墙（填充像素）
+  输出: 全封闭平面图（无门洞）
+
+Step 2: 自动裁剪（像素检测，无 AI）
+  与原方案相同，检测平面图边界，得到 cropInfo
+
+Step 3: 房间布局识别（AI，在封闭图上）
+  Step 3A: 识别房间列表（STEP1A_ROOMS_PROMPT）
+  Step 3B: 计算网格尺寸（确定性，aspect ratio + 房间数）
+  Step 3C: 填充网格（STEP1C_GRID_PROMPT）
+  优势: 门洞已封闭，所有房间边界清晰，AI 识别更准
+
+Step 4: 确定性生成墙体拓扑（generateCellsFromLayout）
+
+Step 5: 结构递归细化
+  与 §11.2 方案相同
+  优势: 房间边界干净，cell 不会卡在门洞上
+
+Step 6: 门坐标映射（确定性）
+  将 Step 0 的像素坐标 → 网格坐标 (x, z, face)
+  公式: gridX = floor(px / (cropW / gridX_count)), 同理 z
+
+Step 7: 门窗穿刺（确定性，pierceFeatures）
+```
+
+#### 架构对比
+
+| 步骤 | 旧方案 | 新方案 |
+|------|--------|--------|
+| 门的检测时机 | Phase 3，房间识别后 | Step 0，最先做 |
+| 房间识别时的图 | 带门洞原图 ❌ | 封闭图 ✅ |
+| 递归细化时的边界 | 可能卡在门洞 ❌ | 全封闭，边界干净 ✅ |
+| 门的定位方式 | AI 在墙面列表里猜 ❌ | 独立符号检测，更准 ✅ |
+
+### 12.3 Step 0 门符号检测 Prompt 设计
+
+```
+You are analyzing an architectural floor plan image.
+
+Detect ALL door symbols in the image. Door symbols appear as:
+- An arc (quarter-circle) indicating the swing path
+- A straight line at the arc's base (the door leaf)
+- The combination indicates a door opening in a wall
+
+For each door found, return its center position and approximate width
+as normalized coordinates (0.0–1.0 relative to full image size).
+
+Return ONLY a JSON array:
+[
+  { "cx": 0.45, "cy": 0.32, "width": 0.04, "angle": 90 },
+  ...
+]
+
+Where:
+- cx, cy: center of the door opening (normalized 0–1)
+- width: door opening width as fraction of image width
+- angle: wall orientation in degrees (0=horizontal wall, 90=vertical wall)
+
+Return [] if no doors are visible.
+```
+
+### 12.4 Step 1 门洞封闭预处理
+
+在检测到的每个门位置，用与周围墙体相近的颜色（通常为黑色线条）绘制一段短线，覆盖门洞，使其在视觉上变为实墙。
+
+```js
+function sealDoorOpenings(imageDataUrl, doorAnnotations, cropInfo) {
+    // For each door: draw a short line segment at (cx, cy)
+    // perpendicular to the wall, width = door.width * imageWidth
+    // color = #000000 (match wall line color)
+}
+```
+
+### 12.5 坐标映射（Step 0 像素 → Step 6 网格）
+
+```
+门像素坐标 (cx, cy) → 网格坐标 (gx, gz, face)
+
+// cx, cy 是归一化像素坐标（相对于整张图）
+// 先换算到平面图内的相对坐标
+relX = (cx - cropInfo.x) / cropInfo.w   // 0–1 within floor plan
+relZ = (cy - cropInfo.y) / cropInfo.h   // 0–1 within floor plan
+
+// 再映射到网格
+gx = floor(relX * gridX)
+gz = floor(relZ * gridZ)
+
+// face 由 angle 决定
+angle=0  (水平墙) → face 4 or 5 (POS_Z / NEG_Z)
+angle=90 (垂直墙) → face 0 or 1 (POS_X / NEG_X)
+```
+
+### 12.6 待确认设计决策
+
+| # | 问题 | 建议 |
+|---|------|------|
+| 1 | 门洞封闭用纯黑线还是检测周围墙色 | 先用纯黑线，简单可靠 |
+| 2 | 窗的处理：是否也在 Step 0 检测 | 建议一并检测，窗符号（平行短线）同样影响边界识别 |
+| 3 | Step 0 失败（检测不到门）的降级策略 | 跳过封闭步骤，直接用原图走原流程 |
+| 4 | 门宽度换算为 cell 尺寸的精度问题 | 取最近的 cell 边界（四舍五入到格点） |
+
+---
+
+## 13. Confirmed Design Decisions
 
 | # | Decision | Resolution |
 |---|----------|-----------|

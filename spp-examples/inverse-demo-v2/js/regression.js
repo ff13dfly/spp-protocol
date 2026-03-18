@@ -164,6 +164,18 @@ export class RegressionEngine {
         return regions;
     }
 
+    /**
+     * Crop the source image to an arbitrary normalized region.
+     * Public wrapper around _cropDataUrl for use by structural refinement.
+     *
+     * @param {string} sourceDataUrl
+     * @param {{ x, y, w, h }} cropInfo - normalized crop coordinates (0–1)
+     * @returns {Promise<string>} cropped data URL
+     */
+    cropRegion(sourceDataUrl, cropInfo) {
+        return this._cropDataUrl(sourceDataUrl, cropInfo);
+    }
+
     // ─── Private helpers ──────────────────────────────────────
 
     _avgColorDiff(a, b) {

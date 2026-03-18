@@ -1,22 +1,26 @@
 /**
  * main.js — SPP Inverse Modeling Demo V2
  *
- * Full 5-phase reconstruction pipeline:
- *   Phase 1: AI coarse grid detection
- *   Phase 2: AI binary topology (Wall / Open)
- *   Phase 3: AI door/window detection
- *   Phase 4: Deterministic feature piercing
- *   Phase 5: Top-view regression → local Phase 1-4 recursive refinement
+ * Reconstruction pipeline (structural-refinement architecture):
+ *   Phase 1: AI coarse grid detection (Step1A rooms → Step1B grid size → Step1C fill)
+ *   Phase 2: Deterministic wall topology (generateCellsFromLayout)
+ *   Phase 3: Structural recursive refinement
+ *            - scan cells for structural complexity (multi-room junctions / single-cell rooms)
+ *            - crop region image → AI sub-grid (STEP1_LOCAL_PROMPT) → integrate
+ *            - recurse on sub-cells until MAX_DEPTH or no complex cells remain
+ *   Phase 4: AI door/window detection (on leaf cells, after all structural refinement)
+ *   Phase 5: Deterministic feature piercing
  */
 
 import { LayerRenderer, CELL_SIZE } from './renderer.js?v=19';
 import { SelectionManager }         from './selection.js?v=16';
 import { FloorTexture }             from './floor-texture.js?v=16';
-import { RegressionEngine }         from './regression.js?v=16';
+import { RegressionEngine }         from './regression.js?v=17';
 import {
     SPPInverseEngine,
     RecursiveGridManager,
     generateCellsFromLayout,
+    scanComplexCells,
 } from './shim.js';
 
 // ─── Model definitions ────────────────────────────────────────
@@ -419,6 +423,221 @@ function buildEngine() {
 
 // ─── Main reconstruction (Phase 1–4) ─────────────────────────
 
+// ─── Step 0/1: Door sealing helpers ───────────────────────────
+
+/**
+ * Draw wall lines over each detected door opening, producing a "sealed" image
+ * where all doors appear as solid walls. Used so layout AI sees clean boundaries.
+ *
+ * @param {string} imageDataUrl
+ * @param {Array}  doorSymbols  - [{ cx, cy, width, angle }, ...] normalized 0–1
+ * @returns {Promise<string>}   - sealed image data URL
+ */
+function sealDoorOpenings(imageDataUrl, doorSymbols) {
+    return new Promise(resolve => {
+        if (!doorSymbols || doorSymbols.length === 0) { resolve(imageDataUrl); return; }
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width  = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+
+            // Wall-line style: black, thickness ≈ 0.6% of image width
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth   = Math.max(3, img.naturalWidth * 0.006);
+            ctx.lineCap     = 'round';
+
+            for (const door of doorSymbols) {
+                const cx  = door.cx    * img.naturalWidth;
+                const cy  = door.cy    * img.naturalHeight;
+                const hl  = (door.width * img.naturalWidth) / 2;
+                const ang = door.angle || 0;
+
+                ctx.beginPath();
+                if (Math.abs(ang - 90) < 45) {
+                    // Door in vertical wall → seal with vertical segment
+                    ctx.moveTo(cx, cy - hl);
+                    ctx.lineTo(cx, cy + hl);
+                } else {
+                    // Door in horizontal wall → seal with horizontal segment
+                    ctx.moveTo(cx - hl, cy);
+                    ctx.lineTo(cx + hl, cy);
+                }
+                ctx.stroke();
+            }
+            resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = () => resolve(imageDataUrl); // fallback: use original
+        img.src = imageDataUrl;
+    });
+}
+
+/**
+ * Map door symbol pixel positions → grid (x, z, face) annotations.
+ * Called after layout analysis so we have cropInfo + gridInfo.
+ *
+ * @param {Array}  doorSymbols  - [{ cx, cy, width, angle }, ...] normalized 0–1
+ * @param {Object} cropInfo     - { x, y, w, h } floor plan region within image
+ * @param {Object} gridInfo     - { gridX, gridZ }
+ * @returns {Array}             - [{ x, z, face, optionId }, ...]
+ */
+function mapDoorsToGrid(doorSymbols, cropInfo, gridInfo) {
+    if (!doorSymbols || doorSymbols.length === 0) return [];
+    const { gridX, gridZ } = gridInfo;
+    const annotations = [];
+
+    for (const door of doorSymbols) {
+        // Translate full-image pixel coords into floor-plan-relative coords (0–1)
+        const relX = (door.cx - cropInfo.x) / cropInfo.w;
+        const relZ = (door.cy - cropInfo.y) / cropInfo.h;
+
+        // Skip anything outside the floor plan bounds
+        if (relX < 0 || relX > 1 || relZ < 0 || relZ > 1) continue;
+
+        const ang = door.angle || 0;
+
+        if (Math.abs(ang - 90) < 45) {
+            // Vertical wall: door is between cell (gx, gz) and (gx+1, gz)
+            // The boundary is at integer grid X values; round to nearest
+            const gx = Math.round(relX * gridX) - 1; // left cell of the pair
+            const gz = Math.floor(relZ * gridZ);
+            if (gx >= 0 && gx < gridX - 1 && gz >= 0 && gz < gridZ) {
+                annotations.push({ x: gx, z: gz, face: 0, optionId: 2 }); // face 0 = +X
+            }
+        } else {
+            // Horizontal wall: door is between cell (gx, gz) and (gx, gz+1)
+            const gx = Math.floor(relX * gridX);
+            const gz = Math.round(relZ * gridZ) - 1; // top cell of the pair
+            if (gx >= 0 && gx < gridX && gz >= 0 && gz < gridZ - 1) {
+                annotations.push({ x: gx, z: gz, face: 4, optionId: 2 }); // face 4 = +Z
+            }
+        }
+    }
+
+    // Deduplicate (same x/z/face)
+    const seen = new Set();
+    return annotations.filter(a => {
+        const key = `${a.x},${a.z},${a.face}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+// ─── Structural refinement helpers ────────────────────────────
+
+/**
+ * Compute the normalized crop for a group of cells within their parent grid.
+ * Returns coordinates relative to the full source image.
+ */
+function calculateRegionCrop(parentCropInfo, gridInfo, cells) {
+    const { gridX, gridZ } = gridInfo;
+    const xs = cells.map(c => c.position[0]);
+    const zs = cells.map(c => c.position[2]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+    return {
+        x: parentCropInfo.x + parentCropInfo.w * (minX / gridX),
+        y: parentCropInfo.y + parentCropInfo.h * (minZ / gridZ),
+        w: parentCropInfo.w * ((maxX - minX + 1) / gridX),
+        h: parentCropInfo.h * ((maxZ - minZ + 1) / gridZ),
+    };
+}
+
+/**
+ * Structural recursive refinement.
+ * Scans cells for structural complexity, groups adjacent complex cells into regions,
+ * crops the source image for each region, calls AI for a finer sub-grid, integrates
+ * the result, and recurses on the new sub-cells.
+ *
+ * @param {Array}  cells        - cells at the current depth level
+ * @param {Object} gridInfo     - { gridX, gridZ, layout } for this level
+ * @param {Object} cropInfo     - normalized { x, y, w, h } within the full source image
+ * @param {number} depth        - current recursion depth (starts at 0)
+ */
+async function runStructuralRefinement(cells, gridInfo, cropInfo, depth = 0) {
+    if (depth >= MAX_DEPTH) return;
+    if (!gridInfo.layout) return;
+
+    const complexCells = scanComplexCells(cells, gridInfo.layout);
+    if (complexCells.length === 0) {
+        log(`  Depth ${depth}: no complex cells — done`, 'success');
+        return;
+    }
+
+    log(`Structural depth ${depth}: ${complexCells.length} complex cell(s) → grouping...`);
+    const divergentCoords = complexCells.map(c => ({ gx: c.position[0], gz: c.position[2] }));
+    const regions = regressionEng.groupDivergentRegions(divergentCoords, cells, gridInfo);
+    log(`  ${regions.length} region(s) identified`);
+
+    for (const [i, region] of regions.entries()) {
+        const roomNames = [...new Set(region.cells.map(c => c.room))].join(', ');
+        log(`  Region ${i + 1}/${regions.length}: ${region.cells.length} cell(s) [${roomNames}]`, 'running');
+
+        const regionCropInfo = calculateRegionCrop(cropInfo, gridInfo, region.cells);
+
+        let aiOutput;
+        if (MOCK) {
+            const scale = 3;
+            const mockResult = buildMockSubGrid(region.cells, scale);
+            // Build layout from sub-cells so recursion can evaluate their complexity
+            const subLayout = Array.from({ length: mockResult.gridZ }, (_, rz) =>
+                Array.from({ length: mockResult.gridX }, (_, rx) => {
+                    const minX = Math.min(...region.cells.map(c => c.position[0]));
+                    const minZ = Math.min(...region.cells.map(c => c.position[2]));
+                    const parent = region.cells.find(c =>
+                        c.position[0] - minX === Math.floor(rx / scale) &&
+                        c.position[2] - minZ === Math.floor(rz / scale)
+                    );
+                    return parent?.room || null;
+                })
+            );
+            aiOutput = { ...mockResult, layout: subLayout };
+        } else {
+            const constraints = regressionEng.extractConstraints(region.cells);
+            const cropImage   = await regressionEng.cropRegion(state.imageDataUrl, regionCropInfo);
+
+            const localGridInfo = await state.engine.analyzeGridSize(cropImage, {
+                constraints,
+                parentLayout: region.parentLayout,
+            });
+            const localCells = generateCellsFromLayout(
+                localGridInfo.layout, localGridInfo.gridX, localGridInfo.gridZ, []
+            );
+            aiOutput = {
+                scale:   localGridInfo.scale || 3,
+                gridX:   localGridInfo.gridX,
+                gridZ:   localGridInfo.gridZ,
+                cells:   localCells,
+                layout:  localGridInfo.layout,
+            };
+        }
+
+        RecursiveGridManager.integratePerCellRefinement(region.cells, aiOutput);
+
+        // Tag sub-cells with depth metadata
+        for (const parent of region.cells) {
+            for (const sub of parent.refinement?.cells || []) {
+                sub._depth      = depth + 1;
+                sub._parentCell = parent;
+            }
+        }
+
+        log(`  Region ${i + 1} integrated: ${aiOutput.cells.length} sub-cells`, 'success');
+
+        // Recurse on sub-cells
+        const subCells = region.cells.flatMap(c => c.refinement?.cells || []);
+        if (subCells.length > 0) {
+            const subGridInfo = { gridX: aiOutput.gridX, gridZ: aiOutput.gridZ, layout: aiOutput.layout };
+            await runStructuralRefinement(subCells, subGridInfo, regionCropInfo, depth + 1);
+        }
+    }
+
+    layerRenderer.render(state.rootCells, state.gridInfo.gridX, state.gridInfo.gridZ);
+}
+
 async function runReconstruct() {
     if (!state.imageDataUrl) return;
 
@@ -441,39 +660,52 @@ async function runReconstruct() {
             state.rootCells = cells;
             state.cropInfo  = gridInfo.crop || { x: 0, y: 0, w: 1, h: 1 };
         } else {
-            // ── Phase 1a: Auto-detect crop (pixel analysis, no AI) ──
-            log('Phase 1a: Auto-detecting floor plan bounds...', 'running');
+            // ── Step 0: Door symbol detection (full image, before sealing) ──
+            log('Step 0: Detecting door symbols...', 'running');
+            let doorSymbols = [];
+            try {
+                doorSymbols = await engine.detectDoorSymbols(state.imageDataUrl);
+                log(`Step 0 done: ${doorSymbols.length} door symbol(s) detected`);
+            } catch (e) {
+                log(`Step 0 skipped: ${e.message}`);
+            }
+
+            // ── Step 1: Seal door openings → clean wall image ────
+            log('Step 1: Sealing door openings...', 'running');
+            const sealedImage = await sealDoorOpenings(state.imageDataUrl, doorSymbols);
+            log(`Step 1 done${doorSymbols.length ? ` (${doorSymbols.length} opening(s) sealed)` : ' (no doors to seal)'}`);
+
+            // ── Step 2: Auto-detect crop on original image ────────
+            log('Step 2: Auto-detecting floor plan bounds...', 'running');
             const autoCrop = state.autoCrop || await detectFloorPlanBounds(state.imageDataUrl);
             state.autoCrop = autoCrop;
             log(`Crop: x=${autoCrop.x.toFixed(3)}, y=${autoCrop.y.toFixed(3)}, w=${autoCrop.w.toFixed(3)}, h=${autoCrop.h.toFixed(3)}`);
 
-            // ── Phase 1b: AI layout analysis (3-step: rooms → grid size → fill) ─
-            log('Phase 1b: Cropping and preprocessing image...', 'running');
-            const croppedImage = await cropToDataUrl(state.imageDataUrl, autoCrop);
-            const processedImage = await preprocessFloorPlan(croppedImage);
-            state.croppedImageDataUrl = processedImage;
+            // ── Step 3: Layout analysis on sealed image ───────────
+            log('Step 3: Cropping and preprocessing sealed image...', 'running');
+            const croppedSealed   = await cropToDataUrl(sealedImage, autoCrop);
+            const processedSealed = await preprocessFloorPlan(croppedSealed);
+            state.croppedImageDataUrl = processedSealed;
 
-            // Compute aspect ratio for grid size calculation
-            const dims = await getImageDimensions(state.imageDataUrl);
+            const dims        = await getImageDimensions(state.imageDataUrl);
             const aspectRatio = (dims.width * autoCrop.w) / (dims.height * autoCrop.h);
 
-            const layoutResult = await engine.analyzeLayoutOnly(processedImage, aspectRatio);
-
-            // Trim any residual null borders as a safety net
+            log('Step 3: AI layout analysis (rooms → grid size → fill)...', 'running');
+            const layoutResult  = await engine.analyzeLayoutOnly(processedSealed, aspectRatio);
             const trimmedLayout = trimNullBorders(layoutResult.layout);
             const trimmedGridX  = trimmedLayout[0]?.length || layoutResult.gridX;
             const trimmedGridZ  = trimmedLayout.length     || layoutResult.gridZ;
 
             gridInfo = { ...layoutResult, layout: trimmedLayout, gridX: trimmedGridX, gridZ: trimmedGridZ, crop: autoCrop };
-            log(`Phase 1 done: ${trimmedGridX}×${trimmedGridZ} grid`);
+            log(`Step 3 done: ${trimmedGridX}×${trimmedGridZ} grid`);
             gridInfo.layout.forEach((row, z) => log(`  row ${z}: ${row.map(r => r || '·').join(' | ')}`));
 
-            // ── Phase 2: Deterministic wall topology ─────────────
-            log('Phase 2: Generating walls from layout...');
+            // ── Step 4: Deterministic wall topology ───────────────
+            log('Step 4: Generating walls from layout...');
             cells = generateCellsFromLayout(gridInfo.layout, gridInfo.gridX, gridInfo.gridZ, []);
-            log(`Phase 2 done: ${cells.length} cells`);
+            log(`Step 4 done: ${cells.length} cells`);
 
-            // ── Render after Phase 2 so user sees structure ───────
+            // Preview after step 4
             state.gridInfo  = gridInfo;
             state.rootCells = cells;
             state.cropInfo  = autoCrop;
@@ -486,30 +718,23 @@ async function runReconstruct() {
                 gridInfo.gridX, gridInfo.gridZ, CELL_SIZE
             );
             floorTex.setOpacity(Number(floorOpacity.value));
-            log('Phase 1+2 preview rendered — waiting for door detection...', 'success');
+            log('Step 4 preview rendered — starting structural refinement...', 'success');
 
-            // ── Phase 3: AI door/window detection ────────────────
-            // IMPORTANT: use the same pre-cropped image as Phase 1b so that
-            // the AI's visual cell positions match the grid coordinates.
-            log('Phase 3: Detecting doors & windows (AI)...', 'running');
-            let annotations = [];
-            try {
-                annotations = await engine.detectFeatures(processedImage, cells, gridInfo);
-                const maxSane = Math.max(8, cells.length * 2);
-                if (annotations.length > maxSane) {
-                    log(`Phase 3: ${annotations.length} features (>${maxSane} limit) — Phase 3 results will be discarded`, 'error');
-                } else {
-                    log(`Phase 3 done: ${annotations.length} feature(s) detected`);
-                }
-            } catch (e) {
-                log(`Phase 3 skipped: ${e.message}`);
+            // ── Step 5: Structural recursive refinement ───────────
+            log('Step 5: Structural complexity scan & recursive refinement...', 'running');
+            await runStructuralRefinement(cells, gridInfo, autoCrop, 0);
+            log('Step 5 structural refinement complete', 'success');
+
+            // ── Step 6: Map door symbols → grid annotations ───────
+            const doorAnnotations = mapDoorsToGrid(doorSymbols, autoCrop, gridInfo);
+            log(`Step 6: ${doorAnnotations.length} door(s) mapped to grid`);
+
+            // ── Step 7: Pierce doors into root cell faceOptions ───
+            if (doorAnnotations.length > 0) {
+                cells = engine.pierceFeatures(state.rootCells, doorAnnotations);
+                state.rootCells = cells;
+                log(`Step 7: ${doorAnnotations.length} door(s) pierced`);
             }
-
-            // ── Phase 4: Deterministic feature piercing ──────────
-            log('Phase 4: Piercing features...');
-            cells = engine.pierceFeatures(cells, annotations);
-            state.rootCells = cells;
-            log('Phase 4 done');
         }
 
         layerRenderer.render(state.rootCells, state.gridInfo.gridX, state.gridInfo.gridZ);
@@ -541,47 +766,37 @@ async function runReconstruct() {
     }
 }
 
-// ─── Phase 5: top-view regression loop ────────────────────────
+// ─── Phase 5: manual structural re-refinement ─────────────────
+// Triggered by the "Auto Refine" button after initial reconstruction.
+// Re-runs structural complexity scan on the current leaf cells, going one
+// level deeper. Useful after the user edits or deletes refinements.
 
-async function runPhase5Loop(maxIterations = 3) {
+async function runPhase5Loop() {
     if (!state.rootCells.length) return;
     if (!state.imageDataUrl) return;
     if (!MOCK && !state.engine) { toast('Run initial analysis first', 'error'); return; }
 
     phase5Btn.disabled = true;
-    log('─── Phase 5: top-view regression ───', 'phase');
+    log('─── Structural re-refinement pass ───', 'phase');
 
     try {
-        for (let iter = 0; iter < maxIterations; iter++) {
-            log(`Round ${iter + 1}: rendering top view & comparing...`, 'running');
-            const topView  = layerRenderer.renderTopView();
-            const divergent = await regressionEng.compareWithSource(
-                topView, state.imageDataUrl, state.cropInfo, state.gridInfo
-            );
+        // Collect current leaf cells (cells without refinement)
+        const leafCells = state.rootCells.filter(c => !c.refinement);
+        const currentDepth = 0; // operate at root depth; scanComplexCells uses layout
 
-            if (divergent.length === 0) {
-                log(`✓ Converged after ${iter + 1} round(s)`, 'success');
-                toast(`Phase 5: converged after ${iter + 1} round(s).`, 'success');
-                break;
-            }
-
-            log(`${divergent.length} divergent cells — refining...`, 'running');
-            toast(`Phase 5 round ${iter + 1}: ${divergent.length} divergent cells — refining...`);
-
-            const regions = regressionEng.groupDivergentRegions(divergent, state.rootCells, state.gridInfo);
-            log(`Grouped into ${regions.length} region(s)`);
-            for (const [i, region] of regions.entries()) {
-                log(`  Region ${i + 1}/${regions.length}: ${region.cells.length} cells`, 'running');
-                await refineRegion(region.cells, region.parentLayout);
-                log(`  Region ${i + 1} done`, 'success');
-            }
-
-            layerRenderer.render(state.rootCells, state.gridInfo.gridX, state.gridInfo.gridZ);
+        if (!state.gridInfo.layout) {
+            toast('No layout available — run reconstruction first', 'error');
+            return;
         }
+
+        await runStructuralRefinement(leafCells, state.gridInfo, state.cropInfo, currentDepth);
+
+        layerRenderer.render(state.rootCells, state.gridInfo.gridX, state.gridInfo.gridZ);
+        toast('Structural re-refinement complete', 'success');
     } catch (err) {
         console.error(err);
-        log(`✗ Phase 5 failed: ${err.message}`, 'error');
-        toast(`Phase 5 failed: ${err.message}`, 'error');
+        log(`✗ Re-refinement failed: ${err.message}`, 'error');
+        toast(`Re-refinement failed: ${err.message}`, 'error');
     } finally {
         phase5Btn.disabled = false;
     }
@@ -1103,34 +1318,25 @@ function loadImageAsDataUrl(src) {
 }
 
 function buildMockData() {
-    // 6×5 two-bedroom apartment layout (z = row, x = col)
+    // Qwen qwen-vl-max output — Step1A+1C only, no Step3 doors (2026-03-18, prompt v2)
     const layout = [
-        ['Kitchen',  'Kitchen',  'Hallway', 'Bedroom',     'Bedroom',     'Bedroom'],
-        ['Kitchen',  'Kitchen',  'Hallway', 'Bedroom',     'Bedroom',     'Bedroom'],
-        ['Bathroom', 'Bathroom', 'Hallway', 'Living Room', 'Living Room', 'Living Room'],
-        ['Bathroom', 'Bathroom', 'Hallway', 'Living Room', 'Living Room', 'Living Room'],
-        [null,       null,       'Hallway', 'Master Bed',  'Master Bed',  'Master Bed'],
+        ['Kitchen',     'Kitchen',     'Kitchen',     'Hallway', 'Bathroom', 'Bathroom', 'Bathroom'],
+        ['Kitchen',     'Kitchen',     'Kitchen',     'Hallway', 'Bathroom', 'Bathroom', 'Bathroom'],
+        ['Kitchen',     'Kitchen',     'Kitchen',     'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
+        ['Living Room', 'Living Room', 'Living Room', 'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
+        ['Living Room', 'Living Room', 'Living Room', 'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
+        ['Living Room', 'Living Room', 'Living Room', 'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
+        ['Living Room', 'Living Room', 'Living Room', 'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
     ];
-    const gridX = 6, gridZ = 5;
+    const gridX = 7, gridZ = 7;
 
+    // No Step3 — doors/windows omitted to evaluate layout quality alone
     const cells = generateCellsFromLayout(layout, gridX, gridZ, []);
 
-    // Door annotations (both sides of each doorway)
-    const annotations = [
-        { x: 1, z: 0, face: 0, optionId: 2 }, { x: 2, z: 0, face: 1, optionId: 2 },  // Kitchen ↔ Hallway
-        { x: 3, z: 1, face: 1, optionId: 2 }, { x: 2, z: 1, face: 0, optionId: 2 },  // Bedroom ↔ Hallway
-        { x: 1, z: 2, face: 0, optionId: 2 }, { x: 2, z: 2, face: 1, optionId: 2 },  // Bathroom ↔ Hallway
-        { x: 3, z: 3, face: 1, optionId: 1 }, { x: 2, z: 3, face: 0, optionId: 1 },  // Living Room ↔ Hallway (arch)
-        { x: 3, z: 4, face: 1, optionId: 2 }, { x: 2, z: 4, face: 0, optionId: 2 },  // Master Bed ↔ Hallway
-    ];
-
-    const engine = new SPPInverseEngine({ llmProvider: async () => '', onStatus: () => {} });
-    const finalCells = engine.pierceFeatures(cells, annotations);
-
     return {
-        cells: finalCells,
+        cells,
         gridInfo: {
-            crop: { x: 0.05, y: 0.05, w: 0.9, h: 0.9 },
+            crop: { x: 0.12, y: 0.12, w: 0.76, h: 0.76 },
             gridX, gridZ, layout,
         },
     };
