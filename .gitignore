@@ -2,3 +2,5 @@
 **/ .DS_Store
 
 spp-examples/private.md
+
+**/node_modules

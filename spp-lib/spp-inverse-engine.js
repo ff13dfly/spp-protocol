@@ -303,7 +303,7 @@ Rules:
 const STEP1C_GRID_PROMPT = `You are filling a floor plan grid.
 
 The floor plan has been divided into a __GRID_X__ × __GRID_Z__ grid (__GRID_X__ columns, __GRID_Z__ rows).
-Known rooms in this floor plan: __ROOM_LIST__
+Reference room names (use these for consistency, but prioritize what you visually see over this list): __ROOM_LIST__
 
 ## Coordinate system
 - Row 0 = TOP of the floor plan image; last row = BOTTOM.
@@ -315,15 +315,16 @@ Known rooms in this floor plan: __ROOM_LIST__
 - A room at the BOTTOM must occupy high row indices.
 
 ## Your task
-Assign each grid cell a room name from the list above so the grid accurately represents the floor plan layout.
+Assign each grid cell a room name based on what you visually observe in the floor plan image.
 
 ## Rules
 1. Output EXACTLY __GRID_Z__ rows, each with EXACTLY __GRID_X__ elements.
-2. Each cell must be one of the room names listed above, OR null if it is clearly outside the outer walls.
-3. Each room must form a single contiguous rectangular block — no L-shapes, no diagonal assignments.
+2. Each cell must be a room name string, OR null if it is clearly outside the outer walls.
+3. Each room should ideally form a contiguous rectangular block. However, follow the actual visual boundaries — corridors, hallways, and irregular spaces may be L-shaped or non-rectangular.
 4. Larger rooms occupy more cells; smaller rooms occupy fewer — preserve real proportions.
-5. CRITICAL: No row may be entirely null. No column may be entirely null. The grid must be tight to the floor plan boundary.
-6. Every room from the list must appear at least once.
+5. CRITICAL: No row may be entirely null. No column may be entirely null. The grid must be flush with the floor plan boundary on all four sides — do NOT add null padding at the left, right, top, or bottom.
+6. Every distinct space visible in the floor plan must appear at least once.
+7. Use standard English title case for room names (e.g. "Kitchen", "Living Room", "Bedroom 1") — do NOT write them in ALL CAPS.
 
 ## Output
 Return ONLY a JSON 2D array. No explanations, no markdown fences.
@@ -1010,7 +1011,10 @@ export class SPPInverseEngine {
             const cleaned = gridText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
             const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
             if (s === -1 || e === -1) throw new Error('no array found');
-            layout = JSON.parse(cleaned.substring(s, e + 1));
+            layout = JSON.parse(cleaned.substring(s, e + 1))
+                .map(row => row.map(cell =>
+                    (cell === null || cell === 'null' || cell === 'NULL' || cell === '') ? null : cell
+                ));
         } catch (err) {
             throw new Error(`Step 1c failed to parse: ${err.message}\nRaw: ${gridText.slice(0, 300)}`);
         }

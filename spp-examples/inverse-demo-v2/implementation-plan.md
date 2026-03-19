@@ -758,3 +758,97 @@ angle=90 (垂直墙) → face 0 or 1 (POS_X / NEG_X)
 | 8 | **Token strategy** | Front-end crops local sub-image + extracts constraints; AI only sees the small image |
 | 9 | **Mouse assignment** | Left-drag = box-select; Right-drag = rotate; Middle/Right+Shift = pan |
 | 10 | **Phase 4 implementation** | Purely deterministic; only replaces Wall(10) faces; never touches Open faces |
+
+---
+
+## 14. 纯几何空间识别架构（下一阶段优化方向）
+
+### 14.1 背景与动机
+
+在 Section 12（Door-First 架构）实施后，仍存在以下问题：
+
+1. **走廊识别偏差**：STEP1C 要求每个房间是矩形块，Qwen 倾向于把走廊拉成贯穿全高/全宽的整列，导致顶部空间分配错误（如右上角 Bathroom 位置偏移）。
+2. **房间命名引入偏差**：先列房间名单（Step 3A）再填格（Step 3C）的两步流程，AI 会用名字的语义"猜"位置，而不是观察视觉边界。例如 "Hallway" 这个名字本身就暗示"长条形通道"，导致填充时自动延伸。
+3. **Step 3A 的房间数量依赖**：房间数量用于计算网格尺寸，但实际上可以通过宽高比独立计算，不需要先识别房间。
+
+### 14.2 新架构：Wall-Fill + 纯几何分割
+
+核心思路：**先把墙体填实，再让 AI 做纯几何空间切割，不命名房间。**
+
+```
+Step 1: [AI]    检测平面图边界 → cropInfo
+         ↓
+Step 2: [AI]    识别门窗位置 + 建议 gridX/gridZ
+                → 保存 doorSymbols[], windowSymbols[]
+         ↓
+Step 3: [Canvas] 墙体填黑预处理
+                • 阈值检测：深色像素（墙线）→ 标记
+                • Morphological closing：填充细缝，使墙线变为实心区域
+                • 封闭 Step 2 检测到的门洞（覆盖门弧）
+                → 输出：黑墙/白空间 二值图
+         ↓
+Step 4: [AI]    纯空间分割（输入二值图）
+                • 不命名，只区分连通空间
+                • 输出 gridX×gridZ 二维数组，同一空间填同一字母/ID
+                • 对复杂区域递归裁剪放大再识别
+         ↓
+Step 5: [确定性] 将 Step 2 的门窗坐标 pierce 到对应 face
+         ↓
+Step 6: [渲染]  3D 渲染识别结果
+Step 7: [手动]  修正墙体位置
+```
+
+### 14.3 与 Door-First 架构（Section 12）的对比
+
+| 维度 | Section 12（Door-First） | Section 14（Wall-Fill + 几何） |
+|------|--------------------------|-------------------------------|
+| 输入图像 | 原始线图（封闭门洞后） | 黑墙/白空间二值图 |
+| 房间识别方式 | 先列名单，再按名字填格 | 纯几何，只区分连通区域 |
+| 走廊处理 | 易被拉成全列（矩形约束） | 走廊 = 白色通道，形状由像素决定 |
+| AI 理解依赖 | 依赖对房间语义的理解 | 依赖对几何连通性的理解 |
+| 房间命名时机 | Step 3A（影响后续填格） | Step 5 之后可选加一步语义标注 |
+| 实现复杂度 | 中 | Step 3 墙体填黑需要 canvas 形态学处理 |
+| 鲁棒性 | 中（受命名偏差影响） | 高（纯视觉，不依赖语义） |
+
+### 14.4 Step 3 墙体填黑实现要点
+
+```js
+// 输入：原始 floor plan imageData（已封闭门洞）
+// 输出：黑墙/白空间 二值图
+
+function fillWallsBlack(imageData, threshold = 128, dilateRadius = 3) {
+    // 1. 灰度化 + 阈值：深色像素（墙线）→ black (0), 浅色（空间）→ white (255)
+    // 2. Morphological dilation：以 dilateRadius 为半径膨胀黑色区域
+    //    → 细墙线变为实心墙体区域，填充细缝
+    // 3. 返回二值 canvas buffer
+}
+```
+
+关键参数：
+- `threshold`：区分墙/空间的灰度阈值（典型值 100–150，取决于图像风格）
+- `dilateRadius`：膨胀半径（典型值 2–4px，取决于原始墙线粗细）
+
+### 14.5 Step 4 提示词设计
+
+输入二值图（黑墙/白空间）后，提示词不再要求命名：
+
+```
+You are analyzing a floor plan where walls are filled black and rooms are white.
+
+Divide the image into a __GRID_X__ × __GRID_Z__ grid.
+Assign each cell an identifier (A, B, C, ...) so that all cells belonging to
+the same connected white region share the same identifier.
+Use null for cells that are entirely black (wall) or outside the building.
+
+Return ONLY a JSON 2D array:
+[["A","A","B",...], ...]
+```
+
+这样输出与现有 `generateCellsFromLayout` 兼容（room 字段变为空间 ID），无需其他改动。
+
+### 14.6 实施步骤
+
+1. **概念验证**：写 `scripts/wall-fill-test.mjs`，对 `mock-floorplan.png` 执行 Step 3 墙体填黑，输出 `scripts/wall-filled.png`，人工检查质量
+2. **接入 Step 4**：将二值图传给 AI，验证纯几何分割结果
+3. **语义标注（可选）**：分割完成后，可再加一步 AI 调用，对每个空间 ID 打上语义标签（"Kitchen"/"Bedroom" 等），不影响结构识别
+4. **替换现有 Step 3A+3C**：验证通过后，用新流程替换

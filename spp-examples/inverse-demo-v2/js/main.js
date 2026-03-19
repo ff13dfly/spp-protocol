@@ -1265,7 +1265,7 @@ async function loadMockData() {
     setAnalyzing(true);
     selectionMgr.clear();
     try {
-        state.imageDataUrl = await loadImageAsDataUrl('assets/mock-floorplan.png');
+        state.imageDataUrl = await loadImageAsDataUrl('assets/floorplan.png');
 
         const { gridInfo, cells } = buildMockData();
         state.gridInfo  = gridInfo;
@@ -1318,25 +1318,47 @@ function loadImageAsDataUrl(src) {
 }
 
 function buildMockData() {
-    // Qwen qwen-vl-max output — Step1A+1C only, no Step3 doors (2026-03-18, prompt v2)
+    // Qwen qwen-vl-max output — door-first pipeline on floorplan.png (2026-03-18, prompt v3)
+    // Step 0: 5 doors; Step 3A: 7 rooms; Step 3B: 10×7; Step 3C: layout below
     const layout = [
-        ['Kitchen',     'Kitchen',     'Kitchen',     'Hallway', 'Bathroom', 'Bathroom', 'Bathroom'],
-        ['Kitchen',     'Kitchen',     'Kitchen',     'Hallway', 'Bathroom', 'Bathroom', 'Bathroom'],
-        ['Kitchen',     'Kitchen',     'Kitchen',     'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
-        ['Living Room', 'Living Room', 'Living Room', 'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
-        ['Living Room', 'Living Room', 'Living Room', 'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
-        ['Living Room', 'Living Room', 'Living Room', 'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
-        ['Living Room', 'Living Room', 'Living Room', 'Hallway', 'Bedroom',  'Bedroom',  'Bedroom'],
+        ['Bedroom 1', 'Bedroom 1', 'Bedroom 1', 'Hallway', 'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2'  ],
+        ['Bedroom 1', 'Bedroom 1', 'Bedroom 1', 'Hallway', 'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2'  ],
+        ['Bedroom 1', 'Bedroom 1', 'Bedroom 1', 'Hallway', 'Bathroom',    'Bathroom',    'Bathroom',    'Bathroom',    'Bathroom',    'Bathroom'   ],
+        ['Living Room','Living Room','Living Room','Hallway','Dining Room', 'Dining Room', 'Dining Room', 'Dining Room', 'Kitchen',     'Kitchen'    ],
+        ['Living Room','Living Room','Living Room','Hallway','Dining Room', 'Dining Room', 'Dining Room', 'Dining Room', 'Kitchen',     'Kitchen'    ],
+        ['Living Room','Living Room','Living Room','Hallway','Dining Room', 'Dining Room', 'Dining Room', 'Dining Room', 'Kitchen',     'Kitchen'    ],
+        ['Living Room','Living Room','Living Room','Hallway','Dining Room', 'Dining Room', 'Dining Room', 'Dining Room', 'Kitchen',     'Kitchen'    ],
     ];
-    const gridX = 7, gridZ = 7;
+    const gridX = 10, gridZ = 7;
 
-    // No Step3 — doors/windows omitted to evaluate layout quality alone
+    // Step 6 door annotations (cropInfo may be approximate for this image)
+    const doorAnnotations = [
+        { x: 4, z: 2, face: 0, optionId: 2 },
+        { x: 7, z: 1, face: 4, optionId: 2 },
+        { x: 6, z: 3, face: 0, optionId: 2 },
+        { x: 7, z: 5, face: 4, optionId: 2 },
+    ];
+
     const cells = generateCellsFromLayout(layout, gridX, gridZ, []);
+
+    // Apply door annotations — only pierce faces that are currently Wall (id=10)
+    // and have a valid in-grid neighbor (same logic as pierceFeatures)
+    const cellMap = new Map(cells.map(c => [`${c.position[0]},${c.position[2]}`, c]));
+    const FACE_DIR = { 0: [1,0], 1: [-1,0], 4: [0,1], 5: [0,-1] };
+    for (const ann of doorAnnotations) {
+        const cell = cellMap.get(`${ann.x},${ann.z}`);
+        if (!cell) continue;
+        const dir = FACE_DIR[ann.face];
+        if (dir && !cellMap.has(`${ann.x + dir[0]},${ann.z + dir[1]}`)) continue;
+        if (cell.faceOptions[ann.face]?.[0] === 10) {
+            cell.faceOptions[ann.face] = [ann.optionId];
+        }
+    }
 
     return {
         cells,
         gridInfo: {
-            crop: { x: 0.12, y: 0.12, w: 0.76, h: 0.76 },
+            crop: { x: 0.08, y: 0.08, w: 0.84, h: 0.84 },
             gridX, gridZ, layout,
         },
     };
