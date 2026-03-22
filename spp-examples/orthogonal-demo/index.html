@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPP Orthogonal Polygon Reconstruction</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="app">
+        <header id="header">
+            <h1>SPP Orthogonal Reconstruction</h1>
+            <p class="subtitle">Face-line scanning → ParticleCell.refinement</p>
+        </header>
+
+        <div id="main">
+            <div id="preview-panel">
+                <img id="previewImg" src="" alt="Source shape">
+            </div>
+            <div id="viewport-wrap">
+                <canvas id="viewport"></canvas>
+            </div>
+        </div>
+
+        <div id="controls">
+            <div class="control-group">
+                <label>Shape</label>
+                <select id="shapeSelect"></select>
+            </div>
+            <div class="control-group">
+                <label>Grid</label>
+                <div class="stepper">
+                    <button id="gridMinus">◀</button>
+                    <span id="gridDisplay">4</span>
+                    <button id="gridPlus">▶</button>
+                </div>
+            </div>
+            <div class="control-group">
+                <label>Depth</label>
+                <div class="stepper">
+                    <button id="depthMinus">◀</button>
+                    <span id="depthDisplay">3</span>
+                    <button id="depthPlus">▶</button>
+                </div>
+            </div>
+            <div class="control-group">
+                <label>Scale</label>
+                <div class="stepper">
+                    <button id="scaleMinus">◀</button>
+                    <span id="scaleDisplay">3</span>
+                    <button id="scalePlus">▶</button>
+                </div>
+            </div>
+            <button id="rebuildBtn" class="primary-btn">▶ Rebuild</button>
+            <button id="topViewBtn" class="icon-btn" title="Toggle top view">⬇</button>
+
+            <div class="stats">
+                <span>Leaves: <strong id="statCells">-</strong></span>
+                <span>Refined: <strong id="statRefined">-</strong></span>
+                <span>Max Depth: <strong id="statDepth">-</strong></span>
+            </div>
+        </div>
+
+        <div id="toast" class="toast"></div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

@@ -8,6 +8,7 @@ A collection of interactive demonstrations of the **String Particle Protocol (SP
 |---|---|---|
 | [**Maze Demo**](./maze-demo/) | Forward | Demonstrates superposition, cascade collapse, and algorithmic maze generation. |
 | [**Inverse Demo**](./inverse-demo/) | Inverse | Demonstrates 3D reconstruction from 2D floor plans using the AI inverse modeling engine. |
+| [**Orthogonal Demo**](./orthogonal-demo/) | Inverse | Demonstrates orthogonal hull reconstruction from 2D silhouettes with cell refinement. |
 
 ---
 
@@ -21,9 +22,16 @@ All examples are built on the shared library located in the root [`spp-lib/`](..
 
 All examples are browser-based. To run them locally:
 
-1. Open the project root in a terminal.
-2. Start a simple HTTP server:
+1. **Using the Start Script (in Demo directory):**
+   ```bash
+   cd spp-examples/orthogonal-demo/
+   ./start-demo.sh
+   ```
+   This will launch the server for that specific demo.
+
+2. **Manual Start:**
+   Open the project root and run:
    ```bash
    npx serve .
    ```
-3. Open the provided link (usually `http://localhost:3000`) and navigate into the `spp-examples/` directory.
+   Then navigate to `http://localhost:3000/spp-examples/` in your browser.
