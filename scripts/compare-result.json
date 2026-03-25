@@ -1,0 +1,1390 @@
+{
+  "testedAt": "2026-03-18T12:29:49.522Z",
+  "image": "mock-floorplan.png",
+  "imageDimensions": {
+    "width": 640,
+    "height": 640,
+    "aspectRatio": 1
+  },
+  "results": [
+    {
+      "model": "Qwen (qwen-vl-max)",
+      "steps": {
+        "step1a": {
+          "durationMs": 5358,
+          "raw": "[\"Kitchen\", \"Living Room\", \"Bedroom\", \"Bathroom\", \"Hallway\"]",
+          "parsed": [
+            "Kitchen",
+            "Living Room",
+            "Bedroom",
+            "Bathroom",
+            "Hallway"
+          ]
+        },
+        "step1b": {
+          "gridX": 7,
+          "gridZ": 7,
+          "aspectRatio": 1,
+          "roomCount": 5
+        },
+        "step1c": {
+          "durationMs": 8083,
+          "raw": "[\n  [\"Kitchen\", \"Kitchen\", \"Kitchen\", \"Hallway\", \"Bathroom\", \"Bathroom\", \"Bathroom\"],\n  [\"Kitchen\", \"Kitchen\", \"Kitchen\", \"Hallway\", \"Bathroom\", \"Bathroom\", \"Bathroom\"],\n  [\"Kitchen\", \"Kitchen\", \"Kitchen\", \"Hallway\", \"Bedroom\", \"Bedroom\", \"Bedroom\"],\n  [\"Living Room\", \"Living Room\", \"Living Room\", \"Hallway\", \"Bedroom\", \"Bedroom\", \"Bedroom\"],\n  [\"Living Room\", \"Living Room\", \"Living Room\", \"Hallway\", \"Bedroom\", \"Bedroom\", \"Bedroom\"],\n  [\"Living Room\", \"Living Room\", \"Living Room\", \"Hallway\", \"Bedroom\", \"Bedroom\", \"Bedroom\"],\n  [\"Living Room\", \"Living Room\", \"Living Room\", \"Hallway\", \"Bedroom\", \"Bedroom\", \"Bedroom\"]\n]",
+          "parsed": [
+            [
+              "Kitchen",
+              "Kitchen",
+              "Kitchen",
+              "Hallway",
+              "Bathroom",
+              "Bathroom",
+              "Bathroom"
+            ],
+            [
+              "Kitchen",
+              "Kitchen",
+              "Kitchen",
+              "Hallway",
+              "Bathroom",
+              "Bathroom",
+              "Bathroom"
+            ],
+            [
+              "Kitchen",
+              "Kitchen",
+              "Kitchen",
+              "Hallway",
+              "Bedroom",
+              "Bedroom",
+              "Bedroom"
+            ],
+            [
+              "Living Room",
+              "Living Room",
+              "Living Room",
+              "Hallway",
+              "Bedroom",
+              "Bedroom",
+              "Bedroom"
+            ],
+            [
+              "Living Room",
+              "Living Room",
+              "Living Room",
+              "Hallway",
+              "Bedroom",
+              "Bedroom",
+              "Bedroom"
+            ],
+            [
+              "Living Room",
+              "Living Room",
+              "Living Room",
+              "Hallway",
+              "Bedroom",
+              "Bedroom",
+              "Bedroom"
+            ],
+            [
+              "Living Room",
+              "Living Room",
+              "Living Room",
+              "Hallway",
+              "Bedroom",
+              "Bedroom",
+              "Bedroom"
+            ]
+          ]
+        },
+        "phase2": {
+          "cellCount": 49,
+          "wallFaceCount": 47
+        },
+        "step3": {
+          "durationMs": 11765,
+          "raw": "[\n  { \"x\": 2, \"z\": 0, \"face\": 5, \"optionId\": 1 },\n  { \"x\": 5, \"z\": 0, \"face\": 5, \"optionId\": 1 },\n  { \"x\": 3, \"z\": 1, \"face\": 4, \"optionId\": 1 },\n  { \"x\": 3, \"z\": 3, \"face\": 1, \"optionId\": 1 },\n  { \"x\": 4, \"z\": 3, \"face\": 0, \"optionId\": 1 },\n  { \"x\": 4, \"z\": 4, \"face\": 0, \"optionId\": 1 },\n  { \"x\": 4, \"z\": 5, \"face\": 0, \"optionId\": 1 },\n  { \"x\": 3, \"z\": 6, \"face\": 4, \"optionId\": 1 },\n  { \"x\": 1, \"z\": 6, \"face\": 4, \"optionId\": 20 },\n  { \"x\": 2, \"z\": 6, \"face\": 4, \"optionId\": 20 },\n  { \"x\": 4, \"z\": 6, \"face\": 4, \"optionId\": 20 },\n  { \"x\": 5, \"z\": 6, \"face\": 4, \"optionId\": 20 },\n  { \"x\": 6, \"z\": 4, \"face\": 1, \"optionId\": 20 }\n]",
+          "parsed": [
+            {
+              "x": 2,
+              "z": 0,
+              "face": 5,
+              "optionId": 1
+            },
+            {
+              "x": 5,
+              "z": 0,
+              "face": 5,
+              "optionId": 1
+            },
+            {
+              "x": 3,
+              "z": 1,
+              "face": 4,
+              "optionId": 1
+            },
+            {
+              "x": 3,
+              "z": 3,
+              "face": 1,
+              "optionId": 1
+            },
+            {
+              "x": 4,
+              "z": 3,
+              "face": 0,
+              "optionId": 1
+            },
+            {
+              "x": 4,
+              "z": 4,
+              "face": 0,
+              "optionId": 1
+            },
+            {
+              "x": 4,
+              "z": 5,
+              "face": 0,
+              "optionId": 1
+            },
+            {
+              "x": 3,
+              "z": 6,
+              "face": 4,
+              "optionId": 1
+            },
+            {
+              "x": 1,
+              "z": 6,
+              "face": 4,
+              "optionId": 20
+            },
+            {
+              "x": 2,
+              "z": 6,
+              "face": 4,
+              "optionId": 20
+            },
+            {
+              "x": 4,
+              "z": 6,
+              "face": 4,
+              "optionId": 20
+            },
+            {
+              "x": 5,
+              "z": 6,
+              "face": 4,
+              "optionId": 20
+            },
+            {
+              "x": 6,
+              "z": 4,
+              "face": 1,
+              "optionId": 20
+            }
+          ]
+        },
+        "phase4": {
+          "doorsInserted": 1,
+          "windowFaces": 21
+        }
+      },
+      "error": null,
+      "finalCells": [
+        {
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "room": "Kitchen",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              20
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              20
+            ]
+          ]
+        },
+        {
+          "position": [
+            1,
+            0,
+            0
+          ],
+          "room": "Kitchen",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              20
+            ]
+          ]
+        },
+        {
+          "position": [
+            2,
+            0,
+            0
+          ],
+          "room": "Kitchen",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              20
+            ]
+          ]
+        },
+        {
+          "position": [
+            3,
+            0,
+            0
+          ],
+          "room": "Hallway",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            4,
+            0,
+            0
+          ],
+          "room": "Bathroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            5,
+            0,
+            0
+          ],
+          "room": "Bathroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            6,
+            0,
+            0
+          ],
+          "room": "Bathroom",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            0,
+            0,
+            1
+          ],
+          "room": "Kitchen",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              20
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            1,
+            0,
+            1
+          ],
+          "room": "Kitchen",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            2,
+            0,
+            1
+          ],
+          "room": "Kitchen",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            3,
+            0,
+            1
+          ],
+          "room": "Hallway",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            4,
+            0,
+            1
+          ],
+          "room": "Bathroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              10
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            5,
+            0,
+            1
+          ],
+          "room": "Bathroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              10
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            6,
+            0,
+            1
+          ],
+          "room": "Bathroom",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              10
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            0,
+            0,
+            2
+          ],
+          "room": "Kitchen",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              20
+            ],
+            [],
+            [],
+            [
+              10
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            1,
+            0,
+            2
+          ],
+          "room": "Kitchen",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              10
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            2,
+            0,
+            2
+          ],
+          "room": "Kitchen",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              10
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            3,
+            0,
+            2
+          ],
+          "room": "Hallway",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            4,
+            0,
+            2
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            5,
+            0,
+            2
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            6,
+            0,
+            2
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              20
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            0,
+            0,
+            3
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              20
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            1,
+            0,
+            3
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            2,
+            0,
+            3
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              1
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "position": [
+            3,
+            0,
+            3
+          ],
+          "room": "Hallway",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              1
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            4,
+            0,
+            3
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            5,
+            0,
+            3
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            6,
+            0,
+            3
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              20
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            0,
+            0,
+            4
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              20
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            1,
+            0,
+            4
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            2,
+            0,
+            4
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            3,
+            0,
+            4
+          ],
+          "room": "Hallway",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            4,
+            0,
+            4
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            5,
+            0,
+            4
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            6,
+            0,
+            4
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              20
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            0,
+            0,
+            5
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              20
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            1,
+            0,
+            5
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            2,
+            0,
+            5
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            3,
+            0,
+            5
+          ],
+          "room": "Hallway",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            4,
+            0,
+            5
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            5,
+            0,
+            5
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            6,
+            0,
+            5
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              20
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              0
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            0,
+            0,
+            6
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              20
+            ],
+            [],
+            [],
+            [
+              20
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            1,
+            0,
+            6
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              20
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            2,
+            0,
+            6
+          ],
+          "room": "Living Room",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              20
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            3,
+            0,
+            6
+          ],
+          "room": "Hallway",
+          "faceOptions": [
+            [
+              10
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              10
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            4,
+            0,
+            6
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              10
+            ],
+            [],
+            [],
+            [
+              20
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            5,
+            0,
+            6
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              0
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              20
+            ],
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "position": [
+            6,
+            0,
+            6
+          ],
+          "room": "Bedroom",
+          "faceOptions": [
+            [
+              20
+            ],
+            [
+              0
+            ],
+            [],
+            [],
+            [
+              20
+            ],
+            [
+              0
+            ]
+          ]
+        }
+      ],
+      "summary": {
+        "gridX": 7,
+        "gridZ": 7,
+        "rooms": 5,
+        "roomNames": [
+          "Kitchen",
+          "Living Room",
+          "Bedroom",
+          "Bathroom",
+          "Hallway"
+        ],
+        "cells": 49,
+        "wallFaces": 47,
+        "doorsDetected": 8,
+        "windowsDetected": 5,
+        "totalDurationMs": 25206
+      }
+    }
+  ]
+}

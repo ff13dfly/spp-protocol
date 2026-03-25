@@ -1,0 +1,165 @@
+{
+  "testedAt": "2026-03-18T13:49:32.879Z",
+  "image": "mock-floorplan.png",
+  "cropInfo": {
+    "x": 0.12,
+    "y": 0.12,
+    "w": 0.76,
+    "h": 0.76
+  },
+  "step0_doorSymbols": [
+    {
+      "cx": 0.48,
+      "cy": 0.42,
+      "width": 0.05,
+      "angle": 90
+    },
+    {
+      "cx": 0.67,
+      "cy": 0.32,
+      "width": 0.05,
+      "angle": 0
+    },
+    {
+      "cx": 0.67,
+      "cy": 0.51,
+      "width": 0.05,
+      "angle": 90
+    },
+    {
+      "cx": 0.71,
+      "cy": 0.72,
+      "width": 0.05,
+      "angle": 0
+    },
+    {
+      "cx": 0.53,
+      "cy": 0.88,
+      "width": 0.05,
+      "angle": 90
+    }
+  ],
+  "step3_rooms": [
+    "Bedroom 1",
+    "Bedroom 2",
+    "Living Room",
+    "Dining Room",
+    "Kitchen",
+    "Bathroom",
+    "Hallway"
+  ],
+  "step3_gridX": 10,
+  "step3_gridZ": 7,
+  "step3_layout": [
+    [
+      "Bedroom 1",
+      "Bedroom 1",
+      "Bedroom 1",
+      "Hallway",
+      "Bedroom 2",
+      "Bedroom 2",
+      "Bedroom 2",
+      "Bedroom 2",
+      "Bedroom 2",
+      "Bedroom 2"
+    ],
+    [
+      "Bedroom 1",
+      "Bedroom 1",
+      "Bedroom 1",
+      "Hallway",
+      "Bedroom 2",
+      "Bedroom 2",
+      "Bedroom 2",
+      "Bedroom 2",
+      "Bedroom 2",
+      "Bedroom 2"
+    ],
+    [
+      "Bedroom 1",
+      "Bedroom 1",
+      "Bedroom 1",
+      "Hallway",
+      "Bathroom",
+      "Bathroom",
+      "Bathroom",
+      "Bathroom",
+      "Bathroom",
+      "Bathroom"
+    ],
+    [
+      "Living Room",
+      "Living Room",
+      "Living Room",
+      "Hallway",
+      "Dining Room",
+      "Dining Room",
+      "Dining Room",
+      "Dining Room",
+      "Kitchen",
+      "Kitchen"
+    ],
+    [
+      "Living Room",
+      "Living Room",
+      "Living Room",
+      "Hallway",
+      "Dining Room",
+      "Dining Room",
+      "Dining Room",
+      "Dining Room",
+      "Kitchen",
+      "Kitchen"
+    ],
+    [
+      "Living Room",
+      "Living Room",
+      "Living Room",
+      "Hallway",
+      "Dining Room",
+      "Dining Room",
+      "Dining Room",
+      "Dining Room",
+      "Kitchen",
+      "Kitchen"
+    ],
+    [
+      "Living Room",
+      "Living Room",
+      "Living Room",
+      "Hallway",
+      "Dining Room",
+      "Dining Room",
+      "Dining Room",
+      "Dining Room",
+      "Kitchen",
+      "Kitchen"
+    ]
+  ],
+  "step6_doorAnnotations": [
+    {
+      "x": 4,
+      "z": 2,
+      "face": 0,
+      "optionId": 2
+    },
+    {
+      "x": 7,
+      "z": 1,
+      "face": 4,
+      "optionId": 2
+    },
+    {
+      "x": 6,
+      "z": 3,
+      "face": 0,
+      "optionId": 2
+    },
+    {
+      "x": 7,
+      "z": 5,
+      "face": 4,
+      "optionId": 2
+    }
+  ]
+}

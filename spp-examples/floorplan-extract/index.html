@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Floor Plan Structure Extraction</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>Floor Plan Structure Extraction</h1>
+            <p class="subtitle">AI extracts outline + walls + doors/windows → Canvas draws clean geometry</p>
+        </header>
+
+        <div id="toolbar">
+            <div class="control-group">
+                <label>Model</label>
+                <select id="modelSelect">
+                    <option value="qwen-vl-max">Qwen VL Max</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>API Key</label>
+                <input id="apiKeyInput" type="password" placeholder="sk-..." />
+            </div>
+            <button id="uploadBtn" class="btn">Upload</button>
+            <button id="extractBtn" class="btn primary" disabled>Extract</button>
+            <input id="fileInput" type="file" accept="image/*" hidden />
+        </div>
+
+        <div id="main">
+            <div id="source-panel" class="panel">
+                <h3>Source Floor Plan</h3>
+                <canvas id="sourceCanvas"></canvas>
+            </div>
+            <div id="result-panel" class="panel">
+                <h3>Extracted Structure</h3>
+                <canvas id="resultCanvas"></canvas>
+            </div>
+        </div>
+
+        <div id="overlay-controls" style="display:none">
+            <label><input type="checkbox" id="overlayToggle" checked /> Overlay on source</label>
+            <label>Opacity <input type="range" id="overlayOpacity" min="0" max="100" value="50" /></label>
+            <button id="exportBtn" class="btn">Export JSON</button>
+        </div>
+
+        <div id="log-panel">
+            <h3>Pipeline Log</h3>
+            <pre id="logOutput"></pre>
+        </div>
+
+        <div id="toast" class="toast"></div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
