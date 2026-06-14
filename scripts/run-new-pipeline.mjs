@@ -16,7 +16,11 @@ import https from 'https';
 import { createCanvas, loadImage } from '../scripts/node_modules/canvas/index.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
-const QWEN_API_KEY = 'REDACTED-QWEN-KEY';
+const QWEN_API_KEY = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
+if (!QWEN_API_KEY) {
+    console.error('Set QWEN_API_KEY (or DASHSCOPE_API_KEY) in the environment before running.');
+    process.exit(1);
+}
 const IMAGE_PATH   = path.resolve('spp-examples/inverse-demo-v2/assets/floorplan.png');
 const OUTPUT_FILE  = path.resolve('scripts/pipeline-result.json');
 

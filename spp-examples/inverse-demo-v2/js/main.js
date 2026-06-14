@@ -26,12 +26,14 @@ import {
 // ─── Model definitions ────────────────────────────────────────
 
 const MODELS = {
+    'claude-opus-4-8':   { name: 'Claude Opus 4.8',   provider: 'claude', model: 'claude-opus-4-8' },
+    'claude-sonnet-4-6': { name: 'Claude Sonnet 4.6', provider: 'claude', model: 'claude-sonnet-4-6' },
     'qwen-vl-max':       { name: 'Qwen VL Max',       provider: 'qwen',   model: 'qwen-vl-max' },
     'qwen-vl-plus':      { name: 'Qwen VL Plus',      provider: 'qwen',   model: 'qwen-vl-plus' },
     'gemini-2.0-flash':  { name: 'Gemini 2.0 Flash',  provider: 'gemini', model: 'gemini-2.0-flash' },
     'gemini-2.0-pro':    { name: 'Gemini 2.0 Pro',    provider: 'gemini', model: 'gemini-2.0-pro' },
 };
-const DEFAULT_MODEL = 'qwen-vl-max';
+const DEFAULT_MODEL = 'claude-opus-4-8';
 const MOCK = new URLSearchParams(location.search).has('mock');
 const MAX_DEPTH = 3;
 
@@ -1206,12 +1208,46 @@ function toast(msg, type = 'info') {
 // ─── API callers ──────────────────────────────────────────────
 
 async function callModel(apiKey, imageDataUrl, systemPrompt, userText, modelDef) {
-    if (modelDef.provider === 'qwen') {
+    if (modelDef.provider === 'claude') {
+        return callClaude(apiKey, imageDataUrl, systemPrompt, userText, modelDef.model);
+    } else if (modelDef.provider === 'qwen') {
         return callQwen(apiKey, imageDataUrl, systemPrompt, userText, modelDef.model);
     } else if (modelDef.provider === 'gemini') {
         return callGemini(apiKey, imageDataUrl, systemPrompt, userText, modelDef.model);
     }
     throw new Error(`Unknown provider: ${modelDef.provider}`);
+}
+
+async function callClaude(apiKey, imageDataUrl, systemPrompt, userText, modelId) {
+    // imageDataUrl is "data:<mime>;base64,<data>" — split into media_type + raw base64
+    const m = imageDataUrl.match(/^data:(.+?);base64,(.*)$/);
+    const mediaType = m ? m[1] : 'image/png';
+    const base64    = m ? m[2] : imageDataUrl;
+    const body = {
+        model: modelId,
+        max_tokens: 8192,
+        system: systemPrompt,
+        messages: [
+            { role: 'user', content: [
+                { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+                { type: 'text', text: userText },
+            ]},
+        ],
+    };
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            // Required for calling the API directly from a browser (CORS opt-in)
+            'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw new Error(`Claude API error (${resp.status}): ${await resp.text()}`);
+    const data = await resp.json();
+    return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
 }
 
 async function callQwen(apiKey, imageDataUrl, systemPrompt, userText, modelId) {
@@ -1265,7 +1301,7 @@ async function loadMockData() {
     setAnalyzing(true);
     selectionMgr.clear();
     try {
-        state.imageDataUrl = await loadImageAsDataUrl('assets/floorplan.png');
+        state.imageDataUrl = await loadImageAsDataUrl('assets/mock-floorplan.png');
 
         const { gridInfo, cells } = buildMockData();
         state.gridInfo  = gridInfo;
@@ -1318,47 +1354,61 @@ function loadImageAsDataUrl(src) {
 }
 
 function buildMockData() {
-    // Qwen qwen-vl-max output — door-first pipeline on floorplan.png (2026-03-18, prompt v3)
-    // Step 0: 5 doors; Step 3A: 7 rooms; Step 3B: 10×7; Step 3C: layout below
+    // Hand-verified perception of assets/mock-floorplan.png, read directly off the
+    // floor plan by Claude vision — NO external API. The wall topology is produced by
+    // the genuine engine (generateCellsFromLayout); doors/windows confirmed against a
+    // top-down render. Reference: scripts/reconstruct-mock.mjs.
+    const K = 'Kitchen', B = 'Bathroom', H = 'Hallway', L = 'Living Room', D = 'Bedroom';
     const layout = [
-        ['Bedroom 1', 'Bedroom 1', 'Bedroom 1', 'Hallway', 'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2'  ],
-        ['Bedroom 1', 'Bedroom 1', 'Bedroom 1', 'Hallway', 'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2',   'Bedroom 2'  ],
-        ['Bedroom 1', 'Bedroom 1', 'Bedroom 1', 'Hallway', 'Bathroom',    'Bathroom',    'Bathroom',    'Bathroom',    'Bathroom',    'Bathroom'   ],
-        ['Living Room','Living Room','Living Room','Hallway','Dining Room', 'Dining Room', 'Dining Room', 'Dining Room', 'Kitchen',     'Kitchen'    ],
-        ['Living Room','Living Room','Living Room','Hallway','Dining Room', 'Dining Room', 'Dining Room', 'Dining Room', 'Kitchen',     'Kitchen'    ],
-        ['Living Room','Living Room','Living Room','Hallway','Dining Room', 'Dining Room', 'Dining Room', 'Dining Room', 'Kitchen',     'Kitchen'    ],
-        ['Living Room','Living Room','Living Room','Hallway','Dining Room', 'Dining Room', 'Dining Room', 'Dining Room', 'Kitchen',     'Kitchen'    ],
+        [K, K, K, H, B, B, B],  // row 0
+        [K, K, K, H, B, B, B],  // row 1
+        [K, K, K, H, D, D, D],  // row 2
+        [L, L, L, H, D, D, D],  // row 3
+        [L, L, L, H, D, D, D],  // row 4
+        [L, L, L, L, D, D, D],  // row 5 (hallway stops; living room wraps under)
     ];
-    const gridX = 10, gridZ = 7;
+    const gridX = 7, gridZ = 6;
 
-    // Step 6 door annotations (cropInfo may be approximate for this image)
-    const doorAnnotations = [
-        { x: 4, z: 2, face: 0, optionId: 2 },
-        { x: 7, z: 1, face: 4, optionId: 2 },
-        { x: 6, z: 3, face: 0, optionId: 2 },
-        { x: 7, z: 5, face: 4, optionId: 2 },
+    // Interior doors as adjacency pairs {x1,z1,x2,z2}
+    const doors = [
+        { x1: 2, z1: 2, x2: 3, z2: 2 },   // Kitchen ↔ Hallway
+        { x1: 3, z1: 1, x2: 4, z2: 1 },   // Hallway ↔ Bathroom
+        { x1: 3, z1: 3, x2: 4, z2: 3 },   // Hallway ↔ Bedroom
+        { x1: 3, z1: 4, x2: 3, z2: 5 },   // Hallway ↔ Living Room
     ];
 
-    const cells = generateCellsFromLayout(layout, gridX, gridZ, []);
+    const cells = generateCellsFromLayout(layout, gridX, gridZ, doors);
 
-    // Apply door annotations — only pierce faces that are currently Wall (id=10)
-    // and have a valid in-grid neighbor (same logic as pierceFeatures)
-    const cellMap = new Map(cells.map(c => [`${c.position[0]},${c.position[2]}`, c]));
-    const FACE_DIR = { 0: [1,0], 1: [-1,0], 4: [0,1], 5: [0,-1] };
-    for (const ann of doorAnnotations) {
-        const cell = cellMap.get(`${ann.x},${ann.z}`);
-        if (!cell) continue;
-        const dir = FACE_DIR[ann.face];
-        if (dir && !cellMap.has(`${ann.x + dir[0]},${ann.z + dir[1]}`)) continue;
-        if (cell.faceOptions[ann.face]?.[0] === 10) {
-            cell.faceOptions[ann.face] = [ann.optionId];
+    // Feature piercing: reset every exterior face to solid wall (the engine
+    // auto-windows all exterior faces of Kitchen/LivingRoom/Bedroom), then place
+    // only the windows + entrance actually observed in the floor plan.
+    const POS_X = 0, NEG_X = 1, POS_Z = 4, NEG_Z = 5;
+    const at = (x, z) => cells.find(c => c.position[0] === x && c.position[2] === z);
+    const isExterior = (x, z, face) => {
+        const n = { [POS_X]: [x + 1, z], [NEG_X]: [x - 1, z], [POS_Z]: [x, z + 1], [NEG_Z]: [x, z - 1] }[face];
+        return n[0] < 0 || n[0] >= gridX || n[1] < 0 || n[1] >= gridZ || !layout[n[1]]?.[n[0]];
+    };
+    for (const c of cells) {
+        const [x, , z] = c.position;
+        for (const face of [POS_X, NEG_X, POS_Z, NEG_Z]) {
+            if (isExterior(x, z, face) && c.faceOptions[face][0] === 20) c.faceOptions[face] = [10];
         }
     }
+    const windows = [
+        [1, 0, NEG_Z],   // Kitchen — top wall window
+        [5, 0, NEG_Z],   // Bathroom — top wall window
+        [1, 5, POS_Z],   // Living Room — bottom window 1
+        [2, 5, POS_Z],   // Living Room — bottom window 2
+        [5, 5, POS_Z],   // Bedroom — bottom window
+        [6, 3, POS_X],   // Bedroom — right wall window
+    ];
+    for (const [x, z, face] of windows) { const c = at(x, z); if (c) c.faceOptions[face] = [20]; }
+    const entrance = at(3, 0); if (entrance) entrance.faceOptions[NEG_Z] = [2]; // entry door at top of hallway
 
     return {
         cells,
         gridInfo: {
-            crop: { x: 0.08, y: 0.08, w: 0.84, h: 0.84 },
+            crop: { x: 0.11, y: 0.13, w: 0.82, h: 0.79 },
             gridX, gridZ, layout,
         },
     };

@@ -8,7 +8,7 @@ import path from 'path';
 import https from 'https';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-const QWEN_API_KEY    = 'REDACTED-QWEN-KEY';
+const QWEN_API_KEY    = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
 const CLAUDE_API_KEY  = process.env.ANTHROPIC_API_KEY || '';
 const OUTPUT_FILE     = path.resolve('scripts/compare-result.json');
 
@@ -234,7 +234,7 @@ async function callQwen(base64, mime, systemPrompt, userText) {
 async function callClaude(base64, mime, systemPrompt, userText) {
     if (!CLAUDE_API_KEY) throw new Error('ANTHROPIC_API_KEY not set');
     const payload = JSON.stringify({
-        model: 'claude-opus-4-6',
+        model: 'claude-opus-4-8',
         max_tokens: 3000,
         system: systemPrompt,
         messages: [{
@@ -385,12 +385,15 @@ console.log(`\n图片: ${path.basename(imagePath)}  (${width}×${height}, aspect
 console.log('='.repeat(60));
 
 const models = [
-    { name: 'Qwen (qwen-vl-max)', fn: callQwen },
-    ...(CLAUDE_API_KEY ? [{ name: 'Claude (claude-opus-4-6)', fn: callClaude }] : []),
+    ...(QWEN_API_KEY   ? [{ name: 'Qwen (qwen-vl-max)',       fn: callQwen }]   : []),
+    ...(CLAUDE_API_KEY ? [{ name: 'Claude (claude-opus-4-8)', fn: callClaude }] : []),
 ];
 
-if (!CLAUDE_API_KEY) {
-    console.log('⚠️  未设置 ANTHROPIC_API_KEY，跳过 Claude 对比\n');
+if (!QWEN_API_KEY)   console.log('⚠️  未设置 QWEN_API_KEY (或 DASHSCOPE_API_KEY)，跳过 Qwen 对比\n');
+if (!CLAUDE_API_KEY) console.log('⚠️  未设置 ANTHROPIC_API_KEY，跳过 Claude 对比\n');
+if (models.length === 0) {
+    console.error('没有可用的模型 API key（QWEN_API_KEY / ANTHROPIC_API_KEY），退出。');
+    process.exit(1);
 }
 
 const results = [];

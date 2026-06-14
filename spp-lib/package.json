@@ -1,0 +1,7 @@
+{
+  "name": "spp-lib",
+  "version": "1.0.0",
+  "description": "SPP shared library — Core data model & Inverse reconstruction engine (ES modules)",
+  "type": "module",
+  "main": "spp-inverse-engine.js"
+}
