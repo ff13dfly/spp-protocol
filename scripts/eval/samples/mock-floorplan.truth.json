@@ -1,0 +1,32 @@
+{
+  "name": "mock-floorplan",
+  "image": "../../../spp-examples/inverse-demo-v2/assets/mock-floorplan.png",
+  "imageWidth": 640,
+  "imageHeight": 640,
+  "note": "Clean synthetic line drawing — hand-labeled, high confidence. An easy sample: strong models should near-ace it. Discriminating power comes from real/messy plans (add more samples).",
+  "gridX": 7,
+  "gridZ": 6,
+  "rooms": ["Kitchen", "Bathroom", "Hallway", "Living Room", "Bedroom"],
+  "layout": [
+    ["Kitchen", "Kitchen", "Kitchen", "Hallway", "Bathroom", "Bathroom", "Bathroom"],
+    ["Kitchen", "Kitchen", "Kitchen", "Hallway", "Bathroom", "Bathroom", "Bathroom"],
+    ["Kitchen", "Kitchen", "Kitchen", "Hallway", "Bedroom", "Bedroom", "Bedroom"],
+    ["Living Room", "Living Room", "Living Room", "Hallway", "Bedroom", "Bedroom", "Bedroom"],
+    ["Living Room", "Living Room", "Living Room", "Hallway", "Bedroom", "Bedroom", "Bedroom"],
+    ["Living Room", "Living Room", "Living Room", "Living Room", "Bedroom", "Bedroom", "Bedroom"]
+  ],
+  "doors": [
+    { "x1": 2, "z1": 2, "x2": 3, "z2": 2 },
+    { "x1": 3, "z1": 1, "x2": 4, "z2": 1 },
+    { "x1": 3, "z1": 3, "x2": 4, "z2": 3 },
+    { "x1": 3, "z1": 4, "x2": 3, "z2": 5 }
+  ],
+  "windows": [
+    { "x": 1, "z": 0, "face": 5 },
+    { "x": 5, "z": 0, "face": 5 },
+    { "x": 1, "z": 5, "face": 4 },
+    { "x": 2, "z": 5, "face": 4 },
+    { "x": 5, "z": 5, "face": 4 },
+    { "x": 6, "z": 3, "face": 0 }
+  ]
+}

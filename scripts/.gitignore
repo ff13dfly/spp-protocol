@@ -1,6 +1,9 @@
 # Generated reconstruction artifacts
 recon-out/
 
+# Eval reports
+eval/results/
+
 # Generated pipeline / comparison outputs (regenerate with the scripts below)
 pipeline-result.json
 compare-result.json
