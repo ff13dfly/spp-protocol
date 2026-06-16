@@ -18,6 +18,7 @@ SPP is designed to:
 | [SPP-Core v1.0](./specs/SPP-Core-v1.0.md) | Core semantic data model | Stable |
 | [SPP-Spatial-Coverage](./specs/SPP-Spatial-Coverage.md) | Spatial coverage theory | Informative |
 | [SPP-Inverse-Modeling](./specs/SPP-Inverse-Modeling.md) | Inverse modeling and 3D reconstruction | Informative |
+| [SPP-Related-Work](./specs/SPP-Related-Work.md) | Prior art: WFC, CityGML/IFC, SceneScript, SVO | Informative |
 
 ## Repository Layout
 
