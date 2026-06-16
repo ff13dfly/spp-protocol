@@ -158,4 +158,74 @@ This condition holds for the vast majority of human-made architectural and urban
 
 ---
 
+## 5. Connectivity as Surface — Fitting Organic Geometry (Design Note)
+
+> Non-normative. Captures a recurring design question: *can SPP's connectivity
+> states be used to fit a complex/organic 3D surface (e.g. a human face)?* This
+> section records the reasoning and a minimal empirical check so it isn't re-derived.
+
+### 5.1 The idea
+
+Rather than filling a volume with tiny solid cells, choose **which faces are
+connected (Open) vs. barriers (Wall)**; the boundary between connected and
+unconnected regions *is* a closed surface. Sculpt that boundary to fit a target.
+The instinct is sound — the Open/Wall boundary is a well-defined surface.
+
+### 5.2 The degeneracy: connectivity carries shape only where there is topology
+
+Connectivity is an **independent degree of freedom only when the space has
+topology** — two solid cells can still be separated by a Wall or joined by a Door
+(meaningful for rooms). For a **solid organic blob** (a face is a solid bust),
+each cell is merely *inside* or *outside*; whether a face is a Wall is fully
+determined by the occupancy of its two sides. So:
+
+> For a solid object, "choosing connectivity" ≡ "choosing occupancy" — the shape
+> lives entirely in the **boundary location**, and you are voxelizing by another name.
+
+With the current vocabulary (axis-aligned **flat** Open/Wall faces, §4.2) the best
+achievable boundary is a **staircase** — exactly the "Continuous curved surfaces"
+and "Sub-face detail" limitations of §4.2.
+
+### 5.3 The viable extension: a geometric face vocabulary
+
+The limit is the **vocabulary**, not the grid or the recursion (§3). Replace the
+*semantic* options (Wall/Door/Window) with **geometric surface-patch options**
+(flat, slanted, convex/concave corner …) and assign one patch per boundary cell
+at its zero-crossing. This is **Marching Cubes / Dual Contouring / Surface Nets**.
+Notably, SPP's collapse-as-classification framing **survives**: each cell still
+picks one option from a *finite* case set — the regression→classification reframe
+of SPP-Inverse-Modeling still applies, just with a geometric registry. SPP-Core
+already hints this way (`Half-height Wall` is a partial-geometry face; SPP-Inverse
+§5.4 "Hybrid Precision" lets an Option ID reference an external SDF/mesh/NeRF).
+
+### 5.4 Minimal empirical check
+
+`scripts/surface-fit-demo.mjs` extracts the **same** cell grid two ways and
+measures RMS distance to the true surface (in cell-widths):
+
+| Target | Grid | Blocky (flat Open/Wall) | Geometric patch (Surface-Nets) |
+| ------ | ---- | ----------------------- | ------------------------------ |
+| Sphere (pure blob) | 43³ | RMS **0.20** (faceted) | RMS **0.02** (smooth) |
+| Torus (has a hole) | 43³ | RMS **0.20** (faceted) | RMS **0.03** (smooth) |
+
+Same container, ~same face count — the geometric vocabulary fits ~7–10× closer.
+This confirms the grid *can* fit organic surfaces; fidelity is gated by the
+per-cell face vocabulary.
+
+### 5.5 Verdict and boundaries
+
+- **As shipped** (semantic flat faces): organic-surface fitting → staircase. Not suitable for a face.
+- **As an extension** (geometric patch vocabulary): viable and even elegant — but it
+  is *dual contouring with SPP as the adaptive container*. The surface-fidelity
+  machinery (case table, QEF/normal fitting for sharp features) is established
+  graphics; SPP contributes the multi-scale container and the per-cell classification.
+- **Still external**: (a) a target SDF/point-cloud to fit *against*, and (b) the
+  image→3D front-end (photogrammetry / NeRF / 3DMM / Gaussian splatting). SPP
+  reconstructs neither — it stores/refines a structure.
+- **Where the connectivity idea pays off**: shapes with **real topology** — holes,
+  passages, mechanical cavities, semi-open architecture — not smooth solid blobs,
+  for which dedicated representations dominate.
+
+---
+
 *End of SPP-Spatial-Coverage.*

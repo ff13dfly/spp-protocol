@@ -8,3 +8,4 @@ eval/results/
 pipeline-result.json
 compare-result.json
 sealed-floorplan.png
+surface-out/
